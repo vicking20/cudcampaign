@@ -1,36 +1,42 @@
 # CudCampaign
 
-Play a supported 2007 military shooter's single-player campaign together, up to 4 players, over a LAN, a
-virtual LAN, or through a small relay server (room names, nothing exposed). It is built on
-[KisakCOD](https://github.com/SwagSoftware/KisakCOD) (a source rebuild of that game): the host runs the real
-campaign and every guest replays the host's inputs live ("live replay"), so the world is never sent, only
-inputs. You need your own copy of the game.
+Unofficial co-op for a single-player campaign, up to 4 players: over a LAN, a virtual LAN (Tailscale, ZeroTier, ...)
+or through a small relay server that only passes room names and bytes. It is built on
+[KisakCOD](https://github.com/SwagSoftware/KisakCOD), a source reconstruction of the original game. The host runs the
+real campaign; every guest replays the host's inputs live, so the world itself is never sent. **You need your own
+legitimately obtained copy of the original game. No game files are included here.**
 
-What works: join mid-mission (snapshot), respawn beside a living partner or reload the checkpoint when
-everyone is down, mission changes, visible animated players with weapons, names and join/leave messages,
-host-chosen difficulty and enemy count, native controller support, a launcher window built into the exe.
+Features: join mid-mission, respawn beside a living partner, mission changes, visible animated players with names,
+host-chosen difficulty and enemy count, a wave ("horde") mode on any map, controller support, and a launcher window
+built into the exe.
 
-## Where to look
+> Early test build. Only join hosts you trust and share room codes only with people you trust: see [SECURITY.md](SECURITY.md).
+
+## Install (players)
+1. Download the release zip and unpack it **inside your game folder**, so `coop/` sits next to `main/` and `zone/`.
+2. Run `coop/install.ps1` (Windows: right click, Run with PowerShell) or `coop/install.sh` (Linux). It downloads the
+   few third-party runtime files the exe needs (list and checksums in `deps.txt`).
+3. Run `coop/KisakCOD-sp.exe` (Windows), or `coop/play-linux.sh` (Linux/Steam Deck; needs Wine, DXVK is bundled).
+4. Pick Single player / Host / Join / Host online / Join online. Everyone needs the same release.
+
+## Online play
+Players need only a relay address (`host:port`). To run one: [kisak/relay/README.md](kisak/relay/README.md).
+
+## Build it yourself (Linux)
+`kisak/build-from-scratch.sh` clones KisakCOD at the pinned commit, applies `kisak/kisakcod.patch`, fetches the Windows
+SDK (xwin) and D3DX, and builds `KisakCOD-sp.exe`. Then `kisak/release/make-release.sh` builds the zip. Details in
+[kisak/README.md](kisak/README.md).
+
+## Layout
 | Path | What |
 |---|---|
-| `kisak/README.md` | Build KisakCOD, set up the run folder, launcher, launch scripts, all game options |
-| `kisak/PLAN.md` | Status, design notes, backlog (read first when continuing the work) |
-| `kisak/kisakcod.patch` | Every engine change (apply to KisakCOD commit `8aadf94`) |
-| `kisak/launch/` | `host.sh`, `guest.sh`, `setup-run-folder.sh` |
-| `kisak/relay/` | The online relay (`relay.py`), bridge and tests; README explains hosting it |
-| `kisak/release/` | `make-release.sh` builds the download zip (a `coop/` folder to unpack inside the game folder) |
-| `docs/HOW_IT_WORKS.md` | Learning guide to how and why it works |
-
-## Install (from a release zip)
-Unzip so the `coop` folder sits inside your game folder, next to `main` and `zone`, then run
-`coop/KisakCOD-sp.exe`. See `kisak/release/INSTALL.txt`.
-
-Horde mode: pick "Horde waves" in the launcher (host only) to survive 5-20 waves on any map.
+| `kisak/kisakcod.patch` | every change to KisakCOD (applies to commit `8aadf94`) |
+| `kisak/relay/` | the relay (`relay.py`), its installer and tests |
+| `kisak/release/` | what goes into the zip: installers, `deps.txt`, Linux launcher, `make-release.sh` |
+| `kisak/build-from-scratch.sh` | full build on Linux |
 
 ## Credits and licence
-Built on [KisakCOD](https://github.com/SwagSoftware/KisakCOD) by SwagSoftware / LWSS and contributors (GPLv3);
-this project's changes are GPLv3 too. Call of Duty is a trademark of Activision; no game files are included.
-
-## Quick start (after building, see kisak/README.md)
-Start `KisakCOD-sp.exe` with no options for the launcher: Single player, Host, Join (IP), Host online or
-Join online (room name + relay address). Or by script: `kisak/launch/host.sh` and `guest.sh <address>`.
+Built on [KisakCOD](https://github.com/SwagSoftware/KisakCOD) by SwagSoftware / LWSS and contributors (GPLv3). This
+project's changes are GPLv3 too (see `LICENSE`). Linux bundle includes [DXVK](https://github.com/doitsujin/dxvk) (zlib).
+This is an unofficial fan project, not affiliated with or endorsed by Activision. Call of Duty is a trademark of
+Activision.

@@ -1,44 +1,10 @@
-# ============================================================
-# This repo tracks ONLY the co-op mod overlay + project docs.
-# Everything else in this folder is untouched retail game data.
-# ============================================================
-
-# --- Retail game content (present on every machine) ---
-/Docs/*
-!/Docs/*.md
-/Mods/
-!/mods/
-/Mods/ModWarfare/
-/Uninstall/
-/main/
-/miles/
-/players/
-/zone/
-/localization.txt
-/version.inf
-/__iw3sp
-*.exe
-*.bik
-*.bmp
-*.ico
-
-# --- Binaries / third-party libs (d3d9.dll = DXVK, binkw32, mss32, ...)
-# Re-download steps: docs/SETUP.md
-*.dll
-*.lib
-*.a
-*.o
-*.obj
-
-# --- Build / debug artifacts ---
-*.log
-*.png
-*.tga
-*.zip
-*.7z
-hunkusage.dat
-console.log
+# built / local files
 /dist/
-
-# bundled DXVK for the Linux release (zlib licence)
+*.zip
+*.log
+__pycache__/
+# third-party binaries are downloaded by the installer, never committed...
+*.dll
+*.exe
+# ...except the DXVK build bundled for Linux (zlib licence)
 !/kisak/release/linux/d3d9.dll

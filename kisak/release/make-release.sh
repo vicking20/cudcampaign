@@ -28,7 +28,7 @@ cp "$REPO/kisak/release/linux/d3d9.dll" "$C/linux/"   # DXVK 2.6.2 32-bit (zlib 
 cp "$REPO/kisak/release/linux/play-linux.sh" "$C/play-linux.sh"
 chmod +x "$C/play-linux.sh"
 cp "$REPO/kisak/relay/relay.py" "$REPO/kisak/relay/README.md" "$REPO/kisak/relay/cudcampaign-relay.service" "$C/relay/"
-cp "$REPO/docs/HOW_IT_WORKS.md" "$REPO/SECURITY.md" "$C/docs/"
+cp "$REPO/SECURITY.md" "$C/docs/"
 cp "$KISAK_DIR/LICENSE" "$C/LICENSE-GPLv3.txt"
 cp "$REPO/kisak/release/INSTALL.txt" "$C/INSTALL.txt"
 cp "$REPO/kisak/kisakcod.patch" "$C/docs/our-changes-to-kisakcod.patch"
