@@ -10,7 +10,11 @@ set(CMAKE_AR llvm-lib)
 set(CMAKE_RC_COMPILER llvm-rc)
 set(CMAKE_MT "")
 
-set(XWIN /home/deck/cudcampaign/winsdk/sdk)
+if(DEFINED ENV{XWIN_DIR})
+  set(XWIN $ENV{XWIN_DIR})
+else()
+  set(XWIN $ENV{HOME}/cudcampaign/winsdk/sdk)
+endif()
 
 set(_flags "--target=i686-pc-windows-msvc -fms-compatibility -fms-extensions -Wno-everything \
  /imsvc ${XWIN}/crt/include /imsvc ${XWIN}/sdk/include/ucrt /imsvc ${XWIN}/sdk/include/um /imsvc ${XWIN}/sdk/include/shared")

@@ -5,6 +5,10 @@ KisakCOD = GPL source reimplementation of the game (SP + MP + dedi), checked out
 builds it with **clang-cl + lld-link** (MSVC-compatible, handles its `__asm` blocks;
 mingw cannot).
 
+## Quick way: `kisak/build-from-scratch.sh`
+Does everything below in one go (clone KisakCOD at the right commit, apply the patch, fetch xwin SDK + D3DX, configure, build)
+into `~/cudcampaign` (or `WORK=...`). Then `kisak/release/make-release.sh`. The manual steps follow for reference.
+
 ## One-time setup
 1. `sudo pacman -S cmake` (clang, lld, llvm already present)
 2. Windows CRT/SDK via [xwin](https://github.com/Jake-Shadle/xwin) (accepts Microsoft's license):
