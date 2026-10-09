@@ -1598,6 +1598,23 @@ index b49b0cf..25a42de 100644
          level.bMissionFailed = 1;
      }
  }
+diff --git a/src/game/g_trigger.cpp b/src/game/g_trigger.cpp
+index c23e442..9d775c8 100644
+--- a/src/game/g_trigger.cpp
++++ b/src/game/g_trigger.cpp
+@@ -18,6 +18,12 @@ void __cdecl G_Trigger(gentity_s *self, gentity_s *other)
+         MyAssertHandler("c:\\trees\\cod3\\cod3src\\src\\game\\g_trigger.cpp", 10, 0, "%s", "self->r.inuse");
+     if (!other->r.inuse)
+         MyAssertHandler("c:\\trees\\cod3\\cod3src\\src\\game\\g_trigger.cpp", 11, 0, "%s", "other->r.inuse");
++    // COOP: the campaign scripts were written for one player (level.player = entity 0) and fail when an extra
++    // player walks into a scripted trigger ("Non-player entity touched an ambient trigger", thousands of script
++    // errors per mission). Scripted triggers follow player 0, the host, who drives the mission's events;
++    // damage and the like still reach every player through their own code paths.
++    if (other->client && other->s.number > 0 && other->s.number < level.maxclients)
++        return;
+     if (Scr_IsSystemActive())
+     {
+         pendingTriggerListSize = level.pendingTriggerListSize;
 diff --git a/src/game/g_utils.cpp b/src/game/g_utils.cpp
 index 48ba9d4..d2f8a9e 100644
 --- a/src/game/g_utils.cpp
