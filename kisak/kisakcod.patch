@@ -1182,6 +1182,36 @@ index 152d524..99a6241 100644
          ReadClient(cl, save);
          SaveMemory_LoadRead(&j, 4, save);
      }
+diff --git a/src/game/g_scr_main.cpp b/src/game/g_scr_main.cpp
+index b49b0cf..1e3e564 100644
+--- a/src/game/g_scr_main.cpp
++++ b/src/game/g_scr_main.cpp
+@@ -1663,8 +1663,23 @@ void GScr_SetSavedDvar()
+         }
+         else
+         {
+-            v8 = va("SetSavedDvar(): The dvar \"%s\" does not exist.", String);
+-            Scr_Error(v8);
++            // COOP: the first map of a session loads its scripts before cgame has registered its dvars, so a
++            // script's SetSavedDvar on a cgame dvar aborted the whole map script ("3 errors when loading this
++            // map", and the briefing never became ready). Register the one that bites (cargoship) and only warn
++            // for anything else.
++            if (!I_stricmp(String, "compassMaxRange"))
++            {
++                DvarLimits lim;
++                lim.value.min = 0.000099999997f;
++                lim.value.max = FLT_MAX;
++                Dvar_RegisterFloat("compassMaxRange", 3500.0f, lim, DVAR_ARCHIVE | DVAR_CHEAT | DVAR_SAVED,
++                    "The maximum range from the player in world space that objects will be shown on the compass");
++                Dvar_SetFromStringByNameFromSource(String, v9, DVAR_SOURCE_SCRIPT);
++            }
++            else
++            {
++                Com_Printf(CON_CHANNEL_SERVER, "SetSavedDvar(): The dvar \"%s\" does not exist (ignored).\n", String);
++            }
+         }
+     }
+     else
 diff --git a/src/game/g_utils.cpp b/src/game/g_utils.cpp
 index 48ba9d4..d2f8a9e 100644
 --- a/src/game/g_utils.cpp
