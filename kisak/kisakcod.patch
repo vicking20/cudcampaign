@@ -2040,10 +2040,10 @@ index a2d77d7..2ad446c 100644
      SV_InitReliableCommandsForClient(clients);
 diff --git a/src/server/sv_coop.cpp b/src/server/sv_coop.cpp
 new file mode 100644
-index 0000000..774e64e
+index 0000000..7d1dbb0
 --- /dev/null
 +++ b/src/server/sv_coop.cpp
-@@ -0,0 +1,2162 @@
+@@ -0,0 +1,2169 @@
 +// COOP: live replay streaming (spectator mode).
 +//
 +// The SP server records every nondeterministic input into sv.demo.msg (the replay system).
@@ -4195,6 +4195,13 @@ index 0000000..774e64e
 +    return s_gstate == GUEST_FOLLOWING;
 +}
 +
++// the pause menu must not stop the game while other people are playing: a paused guest falls behind the host and
++// has to fast-forward (a long freeze, sometimes with dead input) and a paused host freezes everybody
++bool SV_CoopNoPause()
++{
++    return SV_CoopIsGuest() || SV_CoopHostHasGuest();
++}
++
 +// called from respawn() when an extra player's death delay ran out (same frame on every machine):
 +// co-op rule - extra players respawn beside player 0 instead of reloading the checkpoint
 +void SV_CoopRespawnPlayer(gentity_s *ent)
@@ -4624,6 +4631,26 @@ index 3698871..fd50ab5 100644
          memcpy(frames, v2, sizeof(playerState_s));
          clientNum = frames->clientNum;
          if (clientNum >= 0x880)
+diff --git a/src/ui/ui_main.cpp b/src/ui/ui_main.cpp
+index 6bc7e85..75a0693 100644
+--- a/src/ui/ui_main.cpp
++++ b/src/ui/ui_main.cpp
+@@ -1142,11 +1142,14 @@ const char *__cdecl UI_GetSavegameInfo()
+     return SEH_LocalizeTextMessage(uiInfo.savegameInfo, "Savegame Description Text", LOCMSG_SAFE);
+ }
+ 
++bool SV_CoopNoPause(); // server/sv_coop.cpp
++
+ void __cdecl UI_Pause(int localClientNum, int b)
+ {
+     if (b)
+     {
+-        Dvar_SetIntByName("cl_paused", 1);
++        if (!SV_CoopNoPause()) // COOP: in a shared game the menu opens over the running game, like multiplayer
++            Dvar_SetIntByName("cl_paused", 1);
+         Key_SetCatcher(localClientNum, KEYCATCH_UI);
+     }
+     else
 diff --git a/src/universal/com_files.cpp b/src/universal/com_files.cpp
 index 7e7ea0b..767b38c 100644
 --- a/src/universal/com_files.cpp
