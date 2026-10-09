@@ -2022,10 +2022,10 @@ index a2d77d7..2ad446c 100644
      SV_InitReliableCommandsForClient(clients);
 diff --git a/src/server/sv_coop.cpp b/src/server/sv_coop.cpp
 new file mode 100644
-index 0000000..2a4bc4a
+index 0000000..774e64e
 --- /dev/null
 +++ b/src/server/sv_coop.cpp
-@@ -0,0 +1,2155 @@
+@@ -0,0 +1,2162 @@
 +// COOP: live replay streaming (spectator mode).
 +//
 +// The SP server records every nondeterministic input into sv.demo.msg (the replay system).
@@ -3273,10 +3273,15 @@ index 0000000..2a4bc4a
 +        // from; the same path as after a host checkpoint reload / level change then takes over
 +        s_resetReady = false;
 +        int start = Sys_Milliseconds();
-+        while (!s_resetReady && Sys_Milliseconds() - start < 10000)
++        bool streamBroke = false;
++        // the host only answers while its game is running: a paused host (menu open) or one still loading cannot
++        while (!s_resetReady && Sys_Milliseconds() - start < 60000)
 +        {
 +            if (!Coop_GuestPoll())
++            {
++                streamBroke = true;
 +                break;
++            }
 +            Sleep(1);
 +        }
 +        if (!s_resetReady)
@@ -3285,7 +3290,9 @@ index 0000000..2a4bc4a
 +            s_gstate = GUEST_FAILED;
 +            if (s_connectError[0])
 +                Com_Error(ERR_DROP, "The relay said: %s", s_connectError);
-+            Com_Error(ERR_DROP, "The host did not let you in. Check the password, and that the host has started the mission.");
++            if (!streamBroke)
++                Com_Error(ERR_DROP, "The host did not answer within a minute. Ask the host to close any menu (the game must be running, not paused) and to wait until the mission has started, then try again.");
++            Com_Error(ERR_DROP, "The host did not let you in. Check the password, and that you and the host run the same version of CudCampaign.");
 +            return;
 +        }
 +        s_gstate = GUEST_FOLLOWING; // FinishReset / the map change below manage the state from here

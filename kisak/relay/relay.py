@@ -219,7 +219,7 @@ async def handle_conn(reader, writer, ip):
             room.pending[gid] = fut
             try:
                 room.ctl.write(f"GUEST {gid}\n".encode()); await room.ctl.drain()
-                host_r, host_w = await asyncio.wait_for(fut, 15)
+                host_r, host_w = await asyncio.wait_for(fut, 60)   # a paused host (menu open) cannot answer until it resumes
             except Exception:
                 room.pending.pop(gid, None)
                 release()
