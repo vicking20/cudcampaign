@@ -1,0 +1,30 @@
+# systemd unit for the relay. Install:
+#   sudo useradd --system --no-create-home --shell /usr/sbin/nologin cudrelay
+#   sudo install -d /opt/cudcampaign && sudo cp relay.py /opt/cudcampaign/
+#   sudo cp cudcampaign-relay.service /etc/systemd/system/ && sudo systemctl enable --now cudcampaign-relay
+[Unit]
+Description=CudCampaign co-op relay
+After=network.target
+
+[Service]
+User=cudrelay
+ExecStart=/usr/bin/python3 /opt/cudcampaign/relay.py --port 28999
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+MemoryMax=256M
+TasksMax=256
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target
