@@ -1536,7 +1536,7 @@ index 152d524..1fe76e0 100644
          SaveMemory_LoadRead(&j, 4, save);
      }
 diff --git a/src/game/g_scr_main.cpp b/src/game/g_scr_main.cpp
-index b49b0cf..1e3e564 100644
+index b49b0cf..25a42de 100644
 --- a/src/game/g_scr_main.cpp
 +++ b/src/game/g_scr_main.cpp
 @@ -1663,8 +1663,23 @@ void GScr_SetSavedDvar()
@@ -1565,6 +1565,17 @@ index b49b0cf..1e3e564 100644
          }
      }
      else
+@@ -6962,7 +6977,10 @@ void GScr_MissionFailed()
+     v0 = G_Find(0, offsetof(gentity_s, classname), scr_const.player);
+     if (v0)
+     {
++        extern bool g_coopMissionFailing; // server/sv_coop.cpp: a mission failure is a team reload, not a single respawn
++        g_coopMissionFailing = true;
+         respawn(v0);
++        g_coopMissionFailing = false;
+         level.bMissionFailed = 1;
+     }
+ }
 diff --git a/src/game/g_utils.cpp b/src/game/g_utils.cpp
 index 48ba9d4..d2f8a9e 100644
 --- a/src/game/g_utils.cpp
@@ -1989,10 +2000,10 @@ index a2d77d7..2ad446c 100644
      SV_InitReliableCommandsForClient(clients);
 diff --git a/src/server/sv_coop.cpp b/src/server/sv_coop.cpp
 new file mode 100644
-index 0000000..bb50052
+index 0000000..83cfec6
 --- /dev/null
 +++ b/src/server/sv_coop.cpp
-@@ -0,0 +1,2140 @@
+@@ -0,0 +1,2144 @@
 +// COOP: live replay streaming (spectator mode).
 +//
 +// The SP server records every nondeterministic input into sv.demo.msg (the replay system).
@@ -3401,8 +3412,12 @@ index 0000000..bb50052
 +// respawn beside a living partner; when nobody else is alive the whole team is down, and the normal
 +// SP checkpoint reload happens (the host triggers it, guests follow through the stream).
 +// Playing alone nobody else is alive, so this is exactly the original single-player behaviour.
++bool g_coopMissionFailing; // set by the script command missionfailed() while it respawns the player
++
 +bool SV_CoopShouldRespawn(gentity_s *ent)
 +{
++    if (g_coopMissionFailing)
++        return false; // a scripted mission failure (killed a friendly, lost an objective) reloads the checkpoint for everybody
 +    if (atoi(Coop_Dvar("coop_nomercy"))) // test switch (host console): any death reloads the checkpoint
 +        return false;
 +    return Coop_LivingOther(ent->s.number) >= 0;
