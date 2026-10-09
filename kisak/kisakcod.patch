@@ -2114,10 +2114,10 @@ index a2d77d7..2ad446c 100644
      SV_InitReliableCommandsForClient(clients);
 diff --git a/src/server/sv_coop.cpp b/src/server/sv_coop.cpp
 new file mode 100644
-index 0000000..276c8b8
+index 0000000..20fd1f7
 --- /dev/null
 +++ b/src/server/sv_coop.cpp
-@@ -0,0 +1,2290 @@
+@@ -0,0 +1,2281 @@
 +// COOP: live replay streaming (spectator mode).
 +//
 +// The SP server records every nondeterministic input into sv.demo.msg (the replay system).
@@ -2159,18 +2159,11 @@ index 0000000..276c8b8
 +#define COOP_DEFAULT_PORT 28970
 +#define COOP_MAGIC 0x504F4F43 // 'COOP'
 +#define COOP_MAX_PIECE (16 * 1024)
-+// Pacing of a guest behind the host. When a host frame is late (internet, relay) the guest waits for it, and afterwards
-+// drops the waited time instead of sprinting to catch up (a sprint is a visible jump and puts it right back at the edge):
-+// each late packet moves the guest's timeline slightly later, so it builds up slack and later jitter no longer shows.
-+// Only when it is a whole second behind does it fast-forward, back to +set coop_buffer <ms> behind (default 150).
-+static int Coop_BufferMs()
-+{
-+    const dvar_s *d = Dvar_FindVar("coop_buffer");
-+    int ms = d && *Dvar_DisplayableValue(d) ? atoi(Dvar_DisplayableValue(d)) : 150;
-+    return ms < 0 ? 0 : ms > 1000 ? 1000 : ms;
-+}
-+#define COOP_MAX_LAG_MS (Coop_BufferMs() + 1000)  // guest fast-forwards when further behind than this
-+#define COOP_TARGET_LAG_MS (Coop_BufferMs() + 100) // ...down to this (must stay > 2 frames)
++// The guest stays close behind the host: its own movement is shown at once and checked against the host's version,
++// so every extra millisecond of lag makes those corrections bigger (tried 0.3.2/0.3.3: playing further behind made the
++// player snap back and fight the mouse). It fast-forwards when it falls further behind than this.
++#define COOP_MAX_LAG_MS 250    // guest fast-forwards when further behind than this
++#define COOP_TARGET_LAG_MS 100 // ...down to this (must stay > 2 frames)
 +#define COOP_MAP_NAME 64
 +#define COOP_SYNC_DVARS 512 // "name\tvalue\n" lines of the host's simulation settings (see kCoopSyncDvars)
 +#define COOP_RESET_PREFIX (COOP_MAP_NAME + 28 + COOP_SYNC_DVARS) // reset payload = map name, this guest's player slot (int), kind (int), the host's callsign (int), the game's player count, enemy multiplier, horde waves and difficulty (ints), then:
@@ -3246,9 +3239,9 @@ index 0000000..276c8b8
 +    {
 +        // the guest shows its own movement at once and then corrects to the host's result; over the internet that
 +        // correction arrives later and more often, and the engine's default 100 ms blend felt like a step back.
-+        // Blend it over longer: +set coop_smoothing <ms> (default 300, 0 = engine default)
++        // Blend it over longer if wanted: +set coop_smoothing <ms> (default: off, the engine's 100 ms; 300 felt floaty)
 +        const char *sm = Coop_Dvar("coop_smoothing");
-+        int ms = *sm ? atoi(sm) : 300;
++        int ms = *sm ? atoi(sm) : 0;
 +        if (ms > 0)
 +            Dvar_SetFromStringByName("cg_errordecay", va("%d", ms > 2000 ? 2000 : ms));
 +    }
@@ -3567,7 +3560,6 @@ index 0000000..276c8b8
 +            Com_Printf(CON_CHANNEL_SERVER, "COOP-GUEST: waiting on host (have frame %d, need %d)\n", s_hostFrameDone, need);
 +            start = Sys_Milliseconds();
 +        }
-+        sv.clearTimeResidual = 1; // we waited: shift our timeline instead of sprinting through the waited time later
 +        Sleep(1);
 +    }
 +}
@@ -4385,7 +4377,6 @@ index 0000000..276c8b8
 +            Coop_GuestFail("the host stopped sending");
 +            return;
 +        }
-+        sv.clearTimeResidual = 1; // as above: no catch-up sprint after waiting
 +        Sleep(1);
 +    }
 +}

@@ -24,4 +24,4 @@ not the retail one. Do not copy the retail `ddraw.dll`.
 Started with no command line the exe shows the launcher and remembers its choices in `coop_launcher.ini`. Any command
 line skips it. Useful dvars (`+set name value`): `coop_host 1|<port>`, `coop_connect <addr[:port]|ROOM@relay>`,
 `coop_password`, `coop_maxplayers 2-32`, `coop_difficulty 0-3`, `coop_enemies 1-4`, `coop_horde 0|5|10|15|20`,
-`coop_relay <addr>`, `coop_roomname <name>`, `coop_autostart 1`, `r_fullscreen 0|1` (the launcher has a Fullscreen box), `coop_smoothing <ms>` (guest: how gently its own movement is corrected to the host's, default 300), `coop_buffer <ms>` (guest: how far behind the host it lands after a catch-up, default 150; late packets otherwise just shift it a little later instead of causing a jump). A console window is only created with `-console`.
+`coop_relay <addr>`, `coop_roomname <name>`, `coop_autostart 1`, `r_fullscreen 0|1` (the launcher has a Fullscreen box), `coop_smoothing <ms>` (guest: blend its own movement corrections over longer, off by default). A console window is only created with `-console`.
