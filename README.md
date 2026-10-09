@@ -1,6 +1,6 @@
 # CudCampaign
 
-Unofficial co-op for a single-player campaign, up to 4 players: over a LAN, a virtual LAN (Tailscale, ZeroTier, ...)
+Unofficial co-op for a single-player campaign, up to 32 players (the host chooses; over 16 is experimental): over a LAN, a virtual LAN (Tailscale, ZeroTier, ...)
 or through a small relay server that only passes room names and bytes. It is built on
 [KisakCOD](https://github.com/SwagSoftware/KisakCOD), a source reconstruction of the original game. The host runs the
 real campaign; every guest replays the host's inputs live, so the world itself is never sent. **You need your own

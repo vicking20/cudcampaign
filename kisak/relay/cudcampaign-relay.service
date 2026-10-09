@@ -22,9 +22,9 @@ ProtectControlGroups=true
 RestrictAddressFamilies=AF_INET AF_INET6
 RestrictNamespaces=true
 LockPersonality=true
-MemoryMax=256M
-TasksMax=256
-LimitNOFILE=4096
+MemoryMax=512M
+TasksMax=512
+LimitNOFILE=16384
 
 [Install]
 WantedBy=multi-user.target

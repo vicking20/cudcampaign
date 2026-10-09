@@ -523,6 +523,43 @@ index b9009d8..968749f 100644
      Hunk_CheckTempMemoryClear();
      Hunk_CheckTempMemoryHighClear();
      //PIXSetMarker(0xFFFFFFFF, "CL_Frame");
+diff --git a/src/game/actor.cpp b/src/game/actor.cpp
+index 2027ce7..7ff6e7c 100644
+--- a/src/game/actor.cpp
++++ b/src/game/actor.cpp
+@@ -1433,7 +1433,7 @@ gentity_s *__cdecl Actor_IsKnownEnemyInRegion(
+     LABEL_21:
+         ++v9;
+         ++v8;
+-        if (v9 >= 33)
++        if (v9 >= MAX_SENTIENTS)
+             return 0;
+     }
+     v16 = !Actor_PointNearPoint(position, i, radius);
+diff --git a/src/game/actor.h b/src/game/actor.h
+index 9688b1d..633b51a 100644
+--- a/src/game/actor.h
++++ b/src/game/actor.h
+@@ -353,7 +353,7 @@ struct actor_s
+     float fovDot;
+     float fMaxSightDistSqrd;
+     int ignoreCloseFoliage;
+-    sentient_info_t sentientInfo[33];
++    sentient_info_t sentientInfo[MAX_SENTIENTS];
+     SentientHandle pFavoriteEnemy;
+     int talkToSpecies;
+     float lastEnemySightPos[3];
+@@ -413,7 +413,9 @@ struct actor_s
+ // pointers via raw byte arithmetic that only works if sentientInfo is at offset
+ // 0x834 and sentient_info_t is 40 bytes. If a field is added/removed/reordered
+ // these asserts will fire and the magic-offset code will silently break.
+-static_assert(sizeof(actor_s) == 0x1e90, "actor_s size drift vs CoD3SP IDA");
++// COOP: the array grew from 33 to MAX_SENTIENTS entries; everything after it moved by ACTOR_SENTINFO_SHIFT bytes
++#define ACTOR_SENTINFO_SHIFT ((MAX_SENTIENTS - 33) * 0x28)
++static_assert(sizeof(actor_s) == 0x1e90 + ACTOR_SENTINFO_SHIFT, "actor_s size drift vs CoD3SP IDA");
+ static_assert(offsetof(actor_s, sentientInfo) == 0x834, "actor_s.sentientInfo offset drift vs CoD3SP IDA");
+ static_assert(sizeof(sentient_info_t) == 0x28, "sentient_info_t size drift vs CoD3SP IDA");
+ 
 diff --git a/src/game/actor_aim.cpp b/src/game/actor_aim.cpp
 index 5e03802..147cc6c 100644
 --- a/src/game/actor_aim.cpp
@@ -560,8 +597,116 @@ index 5e03802..147cc6c 100644
              ent->s.number);
          return 0;
      }
+diff --git a/src/game/actor_events.cpp b/src/game/actor_events.cpp
+index a751a80..96a0924 100644
+--- a/src/game/actor_events.cpp
++++ b/src/game/actor_events.cpp
+@@ -151,7 +151,7 @@ void __cdecl Actor_WasAttackedBy(actor_s *self, sentient_s *pOther)
+     if (!pOther)
+         MyAssertHandler("c:\\trees\\cod3\\cod3src\\src\\game\\actor_events.cpp", 150, 0, "%s", "pOther");
+     sentients = level.sentients;
+-    if (pOther < level.sentients || pOther >= &level.sentients[33])
++    if (pOther < level.sentients || pOther >= &level.sentients[MAX_SENTIENTS])
+     {
+         MyAssertHandler(
+             "c:\\trees\\cod3\\cod3src\\src\\game\\actor_events.cpp",
+diff --git a/src/game/actor_fields.cpp b/src/game/actor_fields.cpp
+index 8982431..92ad98b 100644
+--- a/src/game/actor_fields.cpp
++++ b/src/game/actor_fields.cpp
+@@ -13,11 +13,11 @@
+ #include "g_main.h"
+ 
+ static_assert(offsetof(actor_s, ent) == 0, "actor_s::ent must be first (field offsets rebase here)");
+-static_assert(offsetof(actor_s, grenadeAwareness) == 3604, "actor_s script-field offset drift: grenadeawareness");
+-static_assert(offsetof(actor_s, pGrenade) == 3608, "actor_s script-field offset drift: grenade");
+-static_assert(offsetof(actor_s, iGrenadeWeaponIndex) == 3612, "actor_s script-field offset drift: grenadeweapon");
+-static_assert(offsetof(actor_s, iGrenadeAmmo) == 3628, "actor_s script-field offset drift: grenadeammo");
+-static_assert(offsetof(actor_s, suppressionMeter) == 3580, "actor_s script-field offset drift: suppressionmeter");
++static_assert(offsetof(actor_s, grenadeAwareness) == 3604 + ACTOR_SENTINFO_SHIFT, "actor_s script-field offset drift: grenadeawareness");
++static_assert(offsetof(actor_s, pGrenade) == 3608 + ACTOR_SENTINFO_SHIFT, "actor_s script-field offset drift: grenade");
++static_assert(offsetof(actor_s, iGrenadeWeaponIndex) == 3612 + ACTOR_SENTINFO_SHIFT, "actor_s script-field offset drift: grenadeweapon");
++static_assert(offsetof(actor_s, iGrenadeAmmo) == 3628 + ACTOR_SENTINFO_SHIFT, "actor_s script-field offset drift: grenadeammo");
++static_assert(offsetof(actor_s, suppressionMeter) == 3580 + ACTOR_SENTINFO_SHIFT, "actor_s script-field offset drift: suppressionmeter");
+ 
+ const actor_fields_s aifields[82] =
+ {
+@@ -43,31 +43,31 @@ const actor_fields_s aifields[82] =
+   { "desiredangle", 296, F_FLOAT, &ActorScr_ReadOnly, NULL },
+   { "pacifist", 2008, F_INT, NULL, NULL },
+   { "pacifistwait", 2012, F_INT, &ActorScr_SetTime, &ActorScr_GetTime },
+-  { "ignoresuppression", 3564, F_INT, NULL, NULL },
+-  { "suppressionwait", 3568, F_INT, NULL, NULL },
+-  { "suppressionduration", 3572, F_INT, NULL, NULL },
+-  { "suppressionstarttime", 3576, F_INT, &ActorScr_ReadOnly, NULL },
+-  { "suppressionmeter", 3580, F_FLOAT, &ActorScr_ReadOnly, NULL },
++  { "ignoresuppression", 3564 + ACTOR_SENTINFO_SHIFT, F_INT, NULL, NULL },
++  { "suppressionwait", 3568 + ACTOR_SENTINFO_SHIFT, F_INT, NULL, NULL },
++  { "suppressionduration", 3572 + ACTOR_SENTINFO_SHIFT, F_INT, NULL, NULL },
++  { "suppressionstarttime", 3576 + ACTOR_SENTINFO_SHIFT, F_INT, &ActorScr_ReadOnly, NULL },
++  { "suppressionmeter", 3580 + ACTOR_SENTINFO_SHIFT, F_FLOAT, &ActorScr_ReadOnly, NULL },
+   { "name", 212, F_STRING, NULL, NULL },
+   { "weapon", 214, F_STRING, NULL, NULL },
+   { "dontavoidplayer", 1836, F_INT, NULL, NULL },
+-  { "grenadeawareness", 3604, F_FLOAT, &ActorScr_Clamp_0_1, NULL },
+-  { "grenade", 3608, F_ENTHANDLE, &ActorScr_ReadOnly, NULL },
+-  { "grenadeweapon", 3612, F_INT, &ActorScr_SetWeapon, &ActorScr_GetWeapon },
+-  { "grenadeammo", 3628, F_INT, NULL, NULL },
+-  { "favoriteenemy", 3420, F_SENTIENTHANDLE, NULL, NULL },
++  { "grenadeawareness", 3604 + ACTOR_SENTINFO_SHIFT, F_FLOAT, &ActorScr_Clamp_0_1, NULL },
++  { "grenade", 3608 + ACTOR_SENTINFO_SHIFT, F_ENTHANDLE, &ActorScr_ReadOnly, NULL },
++  { "grenadeweapon", 3612 + ACTOR_SENTINFO_SHIFT, F_INT, &ActorScr_SetWeapon, &ActorScr_GetWeapon },
++  { "grenadeammo", 3628 + ACTOR_SENTINFO_SHIFT, F_INT, NULL, NULL },
++  { "favoriteenemy", 3420 + ACTOR_SENTINFO_SHIFT, F_SENTIENTHANDLE, NULL, NULL },
+   { "allowpain", 184, F_BYTE, NULL, NULL },
+   { "allowdeath", 185, F_BYTE, NULL, NULL },
+   { "delayeddeath", 186, F_BYTE, &ActorScr_ReadOnly, NULL },
+   { "providecoveringfire", 187, F_BYTE, NULL, NULL },
+-  { "useable", 3687, F_BYTE, NULL, NULL },
+-  { "ignoretriggers", 3688, F_BYTE, NULL, NULL },
+-  { "pushable", 3689, F_BYTE, NULL, NULL },
+-  { "dropweapon", 3668, F_INT, NULL, NULL },
+-  { "drawoncompass", 3672, F_INT, NULL, NULL },
+-  { "scriptstate", 3712, F_STRING, &ActorScr_ReadOnly, NULL },
+-  { "lastscriptstate", 3714, F_STRING, &ActorScr_ReadOnly, NULL },
+-  { "statechangereason", 3716, F_STRING, &ActorScr_ReadOnly, NULL },
++  { "useable", 3687 + ACTOR_SENTINFO_SHIFT, F_BYTE, NULL, NULL },
++  { "ignoretriggers", 3688 + ACTOR_SENTINFO_SHIFT, F_BYTE, NULL, NULL },
++  { "pushable", 3689 + ACTOR_SENTINFO_SHIFT, F_BYTE, NULL, NULL },
++  { "dropweapon", 3668 + ACTOR_SENTINFO_SHIFT, F_INT, NULL, NULL },
++  { "drawoncompass", 3672 + ACTOR_SENTINFO_SHIFT, F_INT, NULL, NULL },
++  { "scriptstate", 3712 + ACTOR_SENTINFO_SHIFT, F_STRING, &ActorScr_ReadOnly, NULL },
++  { "lastscriptstate", 3714 + ACTOR_SENTINFO_SHIFT, F_STRING, &ActorScr_ReadOnly, NULL },
++  { "statechangereason", 3716 + ACTOR_SENTINFO_SHIFT, F_STRING, &ActorScr_ReadOnly, NULL },
+   { "groundtype", 568, F_STRING, &ActorScr_ReadOnly, &ActorScr_GetGroundType },
+   { "anim_pose", 318, F_STRING, &ActorScr_SetAnimPos, NULL },
+   { "goalradius", 1920, F_FLOAT, &ActorScr_SetGoalRadius, NULL },
+@@ -86,7 +86,7 @@ const actor_fields_s aifields[82] =
+   { "stopanimdistsq", 1784, F_FLOAT, NULL, NULL },
+   {
+     "lastenemysightpos",
+-    3428,
++    3428 + ACTOR_SENTINFO_SHIFT,
+     F_VECTOR,
+     &ActorScr_SetLastEnemySightPos,
+     &ActorScr_GetLastEnemySightPos
+@@ -102,10 +102,10 @@ const actor_fields_s aifields[82] =
+   { "keepnodeduringscriptedanim", 1850, F_BYTE, NULL, NULL },
+   { "nododgemove", 1851, F_BYTE, NULL, NULL },
+   { "leanamount", 1864, F_FLOAT, NULL, NULL },
+-  { "badplaceawareness", 3692, F_FLOAT, &ActorScr_Clamp_0_1, NULL },
+-  { "goodshootpos", 3696, F_VECTOR, NULL, NULL },
+-  { "goodshootposvalid", 3708, F_INT, NULL, NULL },
+-  { "flashbangimmunity", 3816, F_INT, NULL, NULL },
++  { "badplaceawareness", 3692 + ACTOR_SENTINFO_SHIFT, F_FLOAT, &ActorScr_Clamp_0_1, NULL },
++  { "goodshootpos", 3696 + ACTOR_SENTINFO_SHIFT, F_VECTOR, NULL, NULL },
++  { "goodshootposvalid", 3708 + ACTOR_SENTINFO_SHIFT, F_INT, NULL, NULL },
++  { "flashbangimmunity", 3816 + ACTOR_SENTINFO_SHIFT, F_INT, NULL, NULL },
+   { "lookaheaddir", 1716, F_VECTOR, &ActorScr_ReadOnly, NULL },
+   { "exposedduration", 1872, F_INT, NULL, NULL },
+   { "requestarrivalnotify", 1976, F_INT, NULL, NULL },
 diff --git a/src/game/actor_spawner.cpp b/src/game/actor_spawner.cpp
-index ec3f2b5..d757d2d 100644
+index ec3f2b5..fc7add2 100644
 --- a/src/game/actor_spawner.cpp
 +++ b/src/game/actor_spawner.cpp
 @@ -4,6 +4,7 @@
@@ -586,14 +731,14 @@ index ec3f2b5..d757d2d 100644
 +    if (maxPlayers < 2)
 +        return false;
 +    int used = 0, players = 0;
-+    for (int i = 0; i < 33; i++)
++    for (int i = 0; i < MAX_SENTIENTS; i++)
 +        used += level.sentients[i].inuse != 0;
 +    for (int n = 0; n < COOP_MAX_CLIENTS; n++)
 +        players += level.clients[n].pers.connected == CON_CONNECTED;
 +    int reserve = maxPlayers - players;
 +    if (reserve < 0)
 +        reserve = 0;
-+    return used + reserve >= 33;
++    return used + reserve >= MAX_SENTIENTS;
 +}
 +
 +void Actor_SetScriptGoalEntity(actor_s *self, gentity_s *pGoalEnt); // actor_script_cmd.cpp
@@ -643,6 +788,15 @@ index ec3f2b5..d757d2d 100644
      if (!ent->count)
      {
          v8 = ent->targetname;
+@@ -146,7 +204,7 @@ gentity_s *__cdecl SpawnActor(gentity_s *ent, unsigned int targetname, enumForce
+                 {
+                     if (actor != j)
+                     {
+-                        for (k = 0; k < 0x21; ++k)
++                        for (k = 0; k < MAX_SENTIENTS; ++k)
+                             SentientInfo_Copy(actor, j, k);
+                     }
+                 }
 @@ -154,11 +212,37 @@ gentity_s *__cdecl SpawnActor(gentity_s *ent, unsigned int targetname, enumForce
              Actor_UpdateSight(actor);
              Actor_UpdateThreat(actor);
@@ -829,6 +983,69 @@ index ec3f2b5..d757d2d 100644
  void __cdecl G_DropActorSpawnersToFloor()
  {
      int entContents[MAX_GENTITIES + 1];
+diff --git a/src/game/actor_team_move.cpp b/src/game/actor_team_move.cpp
+index 3967e7c..c9aca55 100644
+--- a/src/game/actor_team_move.cpp
++++ b/src/game/actor_team_move.cpp
+@@ -285,7 +285,7 @@ int __cdecl Actor_TeamMoveShouldTryDodgeSentient(
+     {
+     LABEL_46:
+         if (actor)
+-            Actor_AddToList(context->dodgeEntities, &context->dodgeEntityCount, 33, actor);
++            Actor_AddToList(context->dodgeEntities, &context->dodgeEntityCount, MAX_SENTIENTS, actor);
+         goto LABEL_48;
+     }
+     if (context_other->fPosDeltaLengthSqrd >= (double)context->fIntervalSqrd)
+@@ -779,7 +779,7 @@ ai_teammove_t __cdecl Actor_GetTeamMoveStatus(actor_s *self, bool bUseInterval,
+         return eResult;
+     Actor_TeamMoveInitializeContext(self, bUseInterval, bAllowGoalPileUp, &context);
+     sentients = level.sentients;
+-    for (i = level.sentients; i < &sentients[33]; ++i)
++    for (i = level.sentients; i < &sentients[MAX_SENTIENTS]; ++i)
+     {
+         if (i->inuse)
+         {
+diff --git a/src/game/actor_team_move.h b/src/game/actor_team_move.h
+index 4633bf6..6373815 100644
+--- a/src/game/actor_team_move.h
++++ b/src/game/actor_team_move.h
+@@ -27,7 +27,7 @@ struct team_move_context_t
+     float fMaxIntervalSqrd;
+     int bFailedLookahead;
+     float fDodgePosDeltaLengthSqrd;
+-    int dodgeEntities[33];
++    int dodgeEntities[MAX_SENTIENTS];
+     int dodgeEntityCount;
+     sentient_s *pDodgeOther;
+     bool bPileUp;
+diff --git a/src/game/enthandle.cpp b/src/game/enthandle.cpp
+index 7351ac6..c8002e9 100644
+--- a/src/game/enthandle.cpp
++++ b/src/game/enthandle.cpp
+@@ -236,7 +236,7 @@ void __cdecl EntHandle::Init()
+ #include "sentient.h"
+ #include "g_main.h"
+ 
+-EntHandleList g_sentientsHandleList[33];
++EntHandleList g_sentientsHandleList[MAX_SENTIENTS];
+ 
+ void SentientHandleDissociate(sentient_s *sentient)
+ {
+diff --git a/src/game/enthandle.h b/src/game/enthandle.h
+index bfa838c..7547c30 100644
+--- a/src/game/enthandle.h
++++ b/src/game/enthandle.h
+@@ -41,7 +41,9 @@ uint32_t __cdecl AddEntHandleInfo(EntHandleList *entHandleList, void *handle);
+ #ifdef KISAK_SP
+ struct sentient_s;
+ 
+-#define MAX_SENTIENTS 33
++#include <universal/q_shared.h>
++// COOP: one sentient per AI actor (32) plus one per player (COOP_MAX_CLIENTS). Was 33 = 32 actors + 1 player.
++#define MAX_SENTIENTS (32 + COOP_MAX_CLIENTS)
+ 
+ struct SentientHandle
+ {
 diff --git a/src/game/g_active.cpp b/src/game/g_active.cpp
 index 0586ef8..78cfc1b 100644
 --- a/src/game/g_active.cpp
@@ -938,7 +1155,7 @@ index 9e237fd..3282942 100644
      {
          Cmd_Kill_f(v3);
 diff --git a/src/game/g_main.cpp b/src/game/g_main.cpp
-index c23c1d3..6b71782 100644
+index c23c1d3..136776d 100644
 --- a/src/game/g_main.cpp
 +++ b/src/game/g_main.cpp
 @@ -3,6 +3,11 @@
@@ -953,8 +1170,12 @@ index c23c1d3..6b71782 100644
  #include "g_main.h"
  #include "g_local.h"
  #include <universal/q_shared.h>
-@@ -114,7 +119,7 @@ gentity_s g_entities[MAX_GENTITIES];
- sentient_s g_sentients[33];
+@@ -111,10 +116,10 @@ entityHandler_t entityHandlers[27] =
+ 
+ 
+ gentity_s g_entities[MAX_GENTITIES];
+-sentient_s g_sentients[33];
++sentient_s g_sentients[MAX_SENTIENTS];
  char g_nextMap[64];
  level_locals_t level;
 -gclient_s g_clients[1];
@@ -1099,11 +1320,15 @@ index c23c1d3..6b71782 100644
          level.currentIndex = 1;
      }
 diff --git a/src/game/g_main.h b/src/game/g_main.h
-index 2cd8d76..6a1a039 100644
+index 2cd8d76..e2ceaf4 100644
 --- a/src/game/g_main.h
 +++ b/src/game/g_main.h
-@@ -274,7 +274,7 @@ extern gentity_s g_entities[MAX_GENTITIES];
- extern sentient_s g_sentients[33];
+@@ -271,10 +271,10 @@ extern const dvar_t *player_radiusDamageMultiplier;
+ 
+ extern struct entityHandler_t entityHandlers[27];
+ extern gentity_s g_entities[MAX_GENTITIES];
+-extern sentient_s g_sentients[33];
++extern sentient_s g_sentients[MAX_SENTIENTS];
  extern char g_nextMap[64];
  extern level_locals_t level;
 -extern gclient_s g_clients[1];
@@ -1113,10 +1338,65 @@ index 2cd8d76..6a1a039 100644
  extern scr_vehicle_s s_vehicles[64];
 \ No newline at end of file
 diff --git a/src/game/g_save.cpp b/src/game/g_save.cpp
-index 152d524..99a6241 100644
+index 152d524..1fe76e0 100644
 --- a/src/game/g_save.cpp
 +++ b/src/game/g_save.cpp
-@@ -634,7 +634,7 @@ void __cdecl WriteField1(const saveField_t *field, const unsigned __int8 *base,
+@@ -209,7 +209,7 @@ const saveField_t gentityFields[86] =
+   { 0, SF_NONE }
+ };
+ 
+-const saveField_t actorFields[77] =
++const saveField_t actorFields[77 + (MAX_SENTIENTS - 33)] =
+ {
+   { offsetof(actor_s, ent),                                                  SF_ENTITY },
+   { offsetof(actor_s, sentient),                                             SF_SENTIENT },
+@@ -260,6 +260,37 @@ const saveField_t actorFields[77] =
+   { offsetof(actor_s, sentientInfo[30].pLastKnownNode),                      SF_PATHNODE },
+   { offsetof(actor_s, sentientInfo[31].pLastKnownNode),                      SF_PATHNODE },
+   { offsetof(actor_s, sentientInfo[32].pLastKnownNode),                      SF_PATHNODE },
++  { offsetof(actor_s, sentientInfo[33].pLastKnownNode),                      SF_PATHNODE },
++  { offsetof(actor_s, sentientInfo[34].pLastKnownNode),                      SF_PATHNODE },
++  { offsetof(actor_s, sentientInfo[35].pLastKnownNode),                      SF_PATHNODE },
++  { offsetof(actor_s, sentientInfo[36].pLastKnownNode),                      SF_PATHNODE },
++  { offsetof(actor_s, sentientInfo[37].pLastKnownNode),                      SF_PATHNODE },
++  { offsetof(actor_s, sentientInfo[38].pLastKnownNode),                      SF_PATHNODE },
++  { offsetof(actor_s, sentientInfo[39].pLastKnownNode),                      SF_PATHNODE },
++  { offsetof(actor_s, sentientInfo[40].pLastKnownNode),                      SF_PATHNODE },
++  { offsetof(actor_s, sentientInfo[41].pLastKnownNode),                      SF_PATHNODE },
++  { offsetof(actor_s, sentientInfo[42].pLastKnownNode),                      SF_PATHNODE },
++  { offsetof(actor_s, sentientInfo[43].pLastKnownNode),                      SF_PATHNODE },
++  { offsetof(actor_s, sentientInfo[44].pLastKnownNode),                      SF_PATHNODE },
++  { offsetof(actor_s, sentientInfo[45].pLastKnownNode),                      SF_PATHNODE },
++  { offsetof(actor_s, sentientInfo[46].pLastKnownNode),                      SF_PATHNODE },
++  { offsetof(actor_s, sentientInfo[47].pLastKnownNode),                      SF_PATHNODE },
++  { offsetof(actor_s, sentientInfo[48].pLastKnownNode),                      SF_PATHNODE },
++  { offsetof(actor_s, sentientInfo[49].pLastKnownNode),                      SF_PATHNODE },
++  { offsetof(actor_s, sentientInfo[50].pLastKnownNode),                      SF_PATHNODE },
++  { offsetof(actor_s, sentientInfo[51].pLastKnownNode),                      SF_PATHNODE },
++  { offsetof(actor_s, sentientInfo[52].pLastKnownNode),                      SF_PATHNODE },
++  { offsetof(actor_s, sentientInfo[53].pLastKnownNode),                      SF_PATHNODE },
++  { offsetof(actor_s, sentientInfo[54].pLastKnownNode),                      SF_PATHNODE },
++  { offsetof(actor_s, sentientInfo[55].pLastKnownNode),                      SF_PATHNODE },
++  { offsetof(actor_s, sentientInfo[56].pLastKnownNode),                      SF_PATHNODE },
++  { offsetof(actor_s, sentientInfo[57].pLastKnownNode),                      SF_PATHNODE },
++  { offsetof(actor_s, sentientInfo[58].pLastKnownNode),                      SF_PATHNODE },
++  { offsetof(actor_s, sentientInfo[59].pLastKnownNode),                      SF_PATHNODE },
++  { offsetof(actor_s, sentientInfo[60].pLastKnownNode),                      SF_PATHNODE },
++  { offsetof(actor_s, sentientInfo[61].pLastKnownNode),                      SF_PATHNODE },
++  { offsetof(actor_s, sentientInfo[62].pLastKnownNode),                      SF_PATHNODE },
++  { offsetof(actor_s, sentientInfo[63].pLastKnownNode),                      SF_PATHNODE },
+   { offsetof(actor_s, Suppressant[0].pSuppressor),                           SF_SENTIENT },
+   { offsetof(actor_s, Suppressant[1].pSuppressor),                           SF_SENTIENT },
+   { offsetof(actor_s, Suppressant[2].pSuppressor),                           SF_SENTIENT },
+@@ -606,7 +637,6 @@ void __cdecl WriteField1(const saveField_t *field, const unsigned __int8 *base,
+             v4 = (*(unsigned int *)v3 - (int)g_entities) / 628 + 1;
+             if (v4 > 0x880)
+                 Com_Error(ERR_DROP, "WriteField1: entity out of range (%i)", v4);
+-
+             *(int *)v3 = v4;
+         }
+         else
+@@ -634,7 +664,7 @@ void __cdecl WriteField1(const saveField_t *field, const unsigned __int8 *base,
          if (*(unsigned int *)v3)
          {
              v7 = (signed int)(*(unsigned int *)v3 - (unsigned int)level.clients) / 46104 + 1;
@@ -1125,7 +1405,34 @@ index 152d524..99a6241 100644
                  Com_Error(ERR_DROP, "WriteField1: client out of range (%i)", v7);
              *(int *)v3 = v7;
          }
-@@ -898,7 +898,7 @@ void __cdecl ReadField(const saveField_t *field, unsigned __int8 *base, SaveGame
+@@ -646,7 +676,7 @@ void __cdecl WriteField1(const saveField_t *field, const unsigned __int8 *base,
+     case SF_ACTOR:
+         if (*(unsigned int *)v3)
+         {
+-            v8 = (signed int)(*(unsigned int *)v3 - (unsigned int)level.actors) / 7824 + 1;
++            v8 = (signed int)(*(unsigned int *)v3 - (unsigned int)level.actors) / (int)sizeof(actor_s) + 1;
+             if (v8 > 0x20)
+                 Com_Error(ERR_DROP, "WriteField1: actor out of range (%i)", v8);
+             *(int *)v3 = v8;
+@@ -660,7 +690,7 @@ void __cdecl WriteField1(const saveField_t *field, const unsigned __int8 *base,
+         if (*(unsigned int *)v3)
+         {
+             v9 = (signed int)(*(unsigned int *)v3 - (unsigned int)level.sentients) / 116 + 1;
+-            if (v9 >= 0x22)
++            if (v9 > MAX_SENTIENTS)
+                 Com_Error(ERR_DROP, "WriteField1: sentient out of range (%i)", v9);
+             *(int *)v3 = v9;
+         }
+@@ -675,7 +705,7 @@ void __cdecl WriteField1(const saveField_t *field, const unsigned __int8 *base,
+         {
+             //v10 = SentientHandle::sentient((SentientHandle *)v3) - level.sentients + 1;
+             v10 = senthand->sentient() - level.sentients + 1;
+-            if (v10 >= 0x22)
++            if (v10 > MAX_SENTIENTS)
+                 Com_Error(ERR_DROP, "WriteField1: sentient out of range (%i)", v10);
+ 
+             *(int *)v3 = v10;
+@@ -898,7 +928,7 @@ void __cdecl ReadField(const saveField_t *field, unsigned __int8 *base, SaveGame
          break;
      case SF_CLIENT:
          v13 = (int)*(int*)v7;
@@ -1134,7 +1441,53 @@ index 152d524..99a6241 100644
          {
              Com_Error(ERR_DROP, "ReadField: client out of range (%i)", *v7);
              v14 = v13 == 0;
-@@ -2021,7 +2021,7 @@ void __cdecl G_SaveMainState(bool savegame, SaveGame *save)
+@@ -920,7 +950,7 @@ void __cdecl ReadField(const saveField_t *field, unsigned __int8 *base, SaveGame
+         break;
+     case SF_SENTIENT:
+         v17 = (int)*(int*)v7;
+-        if (*(unsigned int *)v7 > 33 || (v18 = v17 == 0, v17 < 0))
++        if (*(unsigned int *)v7 > MAX_SENTIENTS || (v18 = v17 == 0, v17 < 0))
+         {
+             Com_Error(ERR_DROP, "ReadField: sentient out of range (%i)", *v7);
+             v18 = v17 == 0;
+@@ -931,7 +961,7 @@ void __cdecl ReadField(const saveField_t *field, unsigned __int8 *base, SaveGame
+         break;
+     case SF_SENTIENTHANDLE:
+         v19 = (int)*(int*)v7;
+-        if (*(unsigned int *)v7 > 33 || v19 < 0)
++        if (*(unsigned int *)v7 > MAX_SENTIENTS || v19 < 0)
+             Com_Error(ERR_DROP, "ReadField: sentient out of range (%i)", *v7);
+ 
+         *(int*)v7 = 0;
+@@ -1178,15 +1208,15 @@ void __cdecl ReadActorPotentialCoverNodes(actor_s *pActor, SaveGame *save)
+ 
+ void __cdecl WriteActor(actor_s *pActor, SaveGame *save)
+ {
+-    unsigned __int8 v4[3832]; // [sp+50h] [-F10h] BYREF
++    unsigned __int8 v4[3832 + ACTOR_SENTINFO_SHIFT]; // COOP: the saved prefix of actor_s grew with sentientInfo
+ 
+     if (!save)
+         MyAssertHandler("c:\\trees\\cod3\\cod3src\\src\\game\\g_save.cpp", 1365, 0, "%s", "save");
+     SaveMemory_SaveWrite(&pActor->inuse, 1, save);
+     if (pActor->inuse)
+     {
+-        memcpy(v4, pActor, 0xEECu);
+-        G_WriteStruct(actorFields, (unsigned __int8 *)pActor, v4, 3820, save);
++        memcpy(v4, pActor, 0xEECu + ACTOR_SENTINFO_SHIFT);
++        G_WriteStruct(actorFields, (unsigned __int8 *)pActor, v4, 3820 + ACTOR_SENTINFO_SHIFT, save);
+         WriteActorPotentialCoverNodes(pActor, save);
+     }
+ }
+@@ -1198,7 +1228,7 @@ void __cdecl ReadActor(actor_s *pActor, SaveGame *save)
+     SaveMemory_LoadRead(&pActor->inuse, 1, save);
+     if (pActor->inuse)
+     {
+-        G_ReadStruct(actorFields, (unsigned __int8 *)pActor, 3820, save);
++        G_ReadStruct(actorFields, (unsigned __int8 *)pActor, 3820 + ACTOR_SENTINFO_SHIFT, save);
+         if (!pActor->inuse)
+             MyAssertHandler("c:\\trees\\cod3\\cod3src\\src\\game\\g_save.cpp", 1394, 0, "%s", "pActor->inuse");
+         ReadActorPotentialCoverNodes(pActor, save);
+@@ -2021,7 +2051,7 @@ void __cdecl G_SaveMainState(bool savegame, SaveGame *save)
              v28 = i;
          }
          i = ++v28;
@@ -1143,7 +1496,7 @@ index 152d524..99a6241 100644
      i = -1;
      SaveMemory_SaveWrite(&i, 4, save);
  
-@@ -2492,6 +2492,7 @@ void __cdecl G_LoadMainState(SaveGame *save)
+@@ -2492,6 +2522,7 @@ void __cdecl G_LoadMainState(SaveGame *save)
      SaveMemory_LoadRead(&level.bDrawCompassFriendlies, 4, save);
      SaveMemory_LoadRead(&j, 4, save);
      Dvar_SetInt(sv_gameskill, j);
@@ -1151,7 +1504,7 @@ index 152d524..99a6241 100644
      SaveMemory_LoadRead(&j, 4, save);
      Dvar_SetInt(g_player_maxhealth, j);
      Sentient_ReadGlob(save);
-@@ -2525,7 +2526,8 @@ void __cdecl G_LoadMainState(SaveGame *save)
+@@ -2525,7 +2556,8 @@ void __cdecl G_LoadMainState(SaveGame *save)
      v6 = 1;
      level.lastFreeEnt = 0;
      num_entities = level.num_entities;
@@ -1161,7 +1514,7 @@ index 152d524..99a6241 100644
      {
          v8 = v6;
          if (!g_entities[v6].r.inuse)
-@@ -2553,14 +2555,18 @@ void __cdecl G_LoadMainState(SaveGame *save)
+@@ -2553,14 +2585,18 @@ void __cdecl G_LoadMainState(SaveGame *save)
  
      for (k = j; j >= 0; k = j)
      {
@@ -1237,6 +1590,51 @@ index f611ab3..b373571 100644
  bool __cdecl BuildCleanSavePath(char *, unsigned int, char const *, enum SaveType);
  bool __cdecl SaveDevice_IsAccessingDevice(void);
  void __cdecl WriteSaveToDeviceCleanup(void);
+diff --git a/src/game/sentient.cpp b/src/game/sentient.cpp
+index 637cc7a..caf2c9c 100644
+--- a/src/game/sentient.cpp
++++ b/src/game/sentient.cpp
+@@ -394,7 +394,7 @@ sentient_s *__cdecl Sentient_FirstSentient(int iTeamFlags)
+     v2 = 0;
+     for (i = &level.sentients->eTeam; !*((_BYTE *)i + 106) || ((1 << *i) & iTeamFlags) == 0; i += 29)
+     {
+-        if (++v2 >= 33)
++        if (++v2 >= MAX_SENTIENTS)
+             return 0;
+     }
+     return &level.sentients[v2];
+@@ -416,7 +416,7 @@ sentient_s *__cdecl Sentient_NextSentient(sentient_s *pPrevSentient, int iTeamFl
+     if (!pPrevSentient)
+         MyAssertHandler("c:\\trees\\cod3\\cod3src\\src\\game\\sentient.cpp", 595, 0, "%s", "pPrevSentient");
+     sentients = level.sentients;
+-    if (pPrevSentient < level.sentients || pPrevSentient >= &level.sentients[33])
++    if (pPrevSentient < level.sentients || pPrevSentient >= &level.sentients[MAX_SENTIENTS])
+     {
+         MyAssertHandler(
+             "c:\\trees\\cod3\\cod3src\\src\\game\\sentient.cpp",
+@@ -437,11 +437,11 @@ sentient_s *__cdecl Sentient_NextSentient(sentient_s *pPrevSentient, int iTeamFl
+         sentients = level.sentients;
+     }
+     v5 = pPrevSentient - sentients + 1;
+-    if (v5 >= 33)
++    if (v5 >= MAX_SENTIENTS)
+         return 0;
+     while (!sentients[v5].inuse || ((1 << sentients[v5].eTeam) & iTeamFlags) == 0)
+     {
+-        if (++v5 >= 33)
++        if (++v5 >= MAX_SENTIENTS)
+             return 0;
+     }
+     return &sentients[v5];
+@@ -692,7 +692,7 @@ void __cdecl G_InitSentients()
+         v0 = (SentientGlobals *)((char *)v0 + 4);
+         --v1;
+     } while (v1);
+-    for (i = 0; i < 33; ++i)
++    for (i = 0; i < MAX_SENTIENTS; ++i)
+         level.sentients[i].inuse = 0;
+     Actor_InitThreatBiasGroups();
+ }
 diff --git a/src/gfx_d3d/r_dvars.cpp b/src/gfx_d3d/r_dvars.cpp
 index b6c4a89..64ef7d7 100644
 --- a/src/gfx_d3d/r_dvars.cpp
@@ -1498,18 +1896,25 @@ index 173d6f4..ce23fe5 100644
  	3,        3,      3,      3,      3,      3,      3,      3,      3,      3,
 diff --git a/src/server/coop_names.h b/src/server/coop_names.h
 new file mode 100644
-index 0000000..7e04aa5
+index 0000000..05490f7
 --- /dev/null
 +++ b/src/server/coop_names.h
-@@ -0,0 +1,9 @@
+@@ -0,0 +1,16 @@
 +// COOP: the callsigns a player can pick (no free text, so nobody can type something offensive).
 +// Shared by the launcher (win32/win_coop_launcher.cpp, passes the index as +set coop_name N) and the
 +// engine (server/sv_coop.cpp, sends the index over the network and shows the name in messages).
++// The index travels in 7 bits (top bit = "announce the join"), so at most 128 names.
 +#pragma once
-+#define COOP_NAME_COUNT 16
++#define COOP_NAME_COUNT 64
 +static const char *const kCoopNames[COOP_NAME_COUNT] = {
 +    "Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf", "Hotel",
 +    "India", "Juliet", "Kilo", "Lima", "Mike", "November", "Oscar", "Papa",
++    "Quebec", "Romeo", "Sierra", "Tango", "Uniform", "Victor", "Whiskey", "Xray",
++    "Yankee", "Zulu", "Ace", "Banshee", "Cobra", "Dagger", "Eagle", "Falcon",
++    "Ghost", "Hawk", "Iceman", "Jackal", "Kestrel", "Lancer", "Maverick", "Nomad",
++    "Omega", "Phantom", "Quasar", "Raven", "Saber", "Talon", "Union", "Viper",
++    "Warden", "Xenon", "Yeti", "Zephyr", "Anvil", "Bishop", "Cipher", "Dagnar",
++    "Ember", "Fenrir", "Griffin", "Harrier", "Ironside", "Javelin", "Knight", "Longbow",
 +};
 diff --git a/src/server/server.h b/src/server/server.h
 index 4f5b3ad..f0030a5 100644
@@ -1584,10 +1989,10 @@ index a2d77d7..2ad446c 100644
      SV_InitReliableCommandsForClient(clients);
 diff --git a/src/server/sv_coop.cpp b/src/server/sv_coop.cpp
 new file mode 100644
-index 0000000..bdfa3fa
+index 0000000..bb50052
 --- /dev/null
 +++ b/src/server/sv_coop.cpp
-@@ -0,0 +1,2134 @@
+@@ -0,0 +1,2140 @@
 +// COOP: live replay streaming (spectator mode).
 +//
 +// The SP server records every nondeterministic input into sv.demo.msg (the replay system).
@@ -1655,7 +2060,13 @@ index 0000000..bdfa3fa
 +#define COOP_CMD_MAGIC 0x31444D43 // 'CMD1' guest -> host: one usercmd
 +
 +// player callsigns (index into kCoopNames), known on every machine; -1 = none yet
-+static int s_playerName[COOP_MAX_CLIENTS] = { -1, -1, -1, -1 };
++struct CoopNameTable
++{
++    int v[COOP_MAX_CLIENTS];
++    CoopNameTable() { for (int i = 0; i < COOP_MAX_CLIENTS; i++) v[i] = -1; }
++    int &operator[](int i) { return v[i]; }
++};
++static CoopNameTable s_playerName;
 +static const char *Coop_NameOf(int n)
 +{
 +    int i = (n >= 0 && n < COOP_MAX_CLIENTS) ? s_playerName[n] : -1;
@@ -1997,7 +2408,7 @@ index 0000000..bdfa3fa
 +    // +set coop_maxplayers N (2..4): total players including the host
 +    int maxPlayers = atoi(Coop_Dvar("coop_maxplayers"));
 +    if (maxPlayers < 2 || maxPlayers > COOP_MAX_CLIENTS)
-+        maxPlayers = COOP_MAX_CLIENTS;
++        maxPlayers = 4; // not set by the launcher: the old default
 +    int connected = 0;
 +    for (int i = 0; i < COOP_MAX_GUESTS; i++)
 +        connected += s_guests[i].used;
@@ -3367,14 +3778,14 @@ index 0000000..bdfa3fa
 +// drop to the floor. Falls back to the anchor's own position.
 +static void Coop_FindSpot(gentity_s *anchor, float *out)
 +{
-+    static const float dist[] = { 48.0f, 80.0f, 120.0f };
++    static const float dist[] = { 48.0f, 80.0f, 120.0f, 160.0f, 200.0f, 250.0f, 300.0f };
 +    static const float dirs[8][2] = {
 +        { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 },
 +        { 0.7071f, 0.7071f }, { -0.7071f, 0.7071f }, { 0.7071f, -0.7071f }, { -0.7071f, -0.7071f },
 +    };
 +    const float *a = anchor->r.currentOrigin;
 +    float from[3] = { a[0], a[1], a[2] + 18.0f }; // a little up, clear of steps
-+    for (int d = 0; d < 3; d++)
++    for (int d = 0; d < (int)(sizeof(dist) / sizeof(dist[0])); d++)
 +    {
 +        for (int i = 0; i < 8; i++)
 +        {
@@ -4154,14 +4565,14 @@ index 7e7ea0b..767b38c 100644
      // The shipping editor lives in <install>\bin\ (the dev build in <install>\bin\Debug\),
      // with the game data (raw\, main\, ...) at <install>\.  Derive fs_basepath from the EXE
 diff --git a/src/universal/q_shared.h b/src/universal/q_shared.h
-index 40b7443..4271d7e 100644
+index 40b7443..1f41444 100644
 --- a/src/universal/q_shared.h
 +++ b/src/universal/q_shared.h
 @@ -1,5 +1,9 @@
  #pragma once
  
 +// COOP: player slots in SP (entities 0..COOP_MAX_CLIENTS-1 are players)
-+#define COOP_MAX_CLIENTS 4
++#define COOP_MAX_CLIENTS 32 // the host chooses how many actually play (coop_maxplayers 2..32)
 +
 +
  // q_shared.h -- included first by ALL program modules.
@@ -4281,10 +4692,10 @@ index 0000000..0db1b32
 +}
 diff --git a/src/win32/win_coop_launcher.cpp b/src/win32/win_coop_launcher.cpp
 new file mode 100644
-index 0000000..49b42cd
+index 0000000..a0a264d
 --- /dev/null
 +++ b/src/win32/win_coop_launcher.cpp
-@@ -0,0 +1,355 @@
+@@ -0,0 +1,359 @@
 +// COOP: pre-game launcher window. Shown by WinMain when the game is started without any command line
 +// (so a Steam shortcut / double click gets a menu, while scripts that pass options skip it).
 +// Plain Win32 controls only: works under Wine/gamescope and needs no resources or extra files.
@@ -4334,6 +4745,7 @@ index 0000000..49b42cd
 +    { "airplane", "Mile High Club" },
 +};
 +const int kMissionCount = sizeof(kMissions) / sizeof(kMissions[0]);
++const int kMaxPlayers = 32; // = COOP_MAX_CLIENTS in universal/q_shared.h
 +
 +enum { ID_SINGLE = 101, ID_HOST, ID_JOIN, ID_HOSTONLINE, ID_JOINONLINE,   // the five modes (radio group)
 +       ID_MAP, ID_ADDR, ID_RELAY, ID_PASS, ID_PLAYERS, ID_NAME, ID_DIFF, ID_ENEMIES, ID_WAVES, ID_START, ID_QUIT };
@@ -4582,7 +4994,7 @@ index 0000000..49b42cd
 +        { "COMBOBOX", "", CBS_DROPDOWNLIST | WS_VSCROLL, 540, 230, 160, 120, ID_ENEMIES, &g.enemiesBox, 1 },
 +        { "STATIC", "Horde waves:", 0, 420, 270, 110, 18, 0, 0, 1 },
 +        { "COMBOBOX", "", CBS_DROPDOWNLIST | WS_VSCROLL, 540, 266, 160, 120, ID_WAVES, &g.wavesBox, 1 },
-+        { "STATIC", "Leave the password empty for an open game.", 0, 420, 312, 350, 18, 0, 0, 2 },
++        { "STATIC", "Password empty = open game. Over 16 players is experimental.", 0, 420, 312, 350, 18, 0, 0, 2 },
 +        { "BUTTON", "Start", BS_DEFPUSHBUTTON, 540, 352, 110, 34, ID_START, 0, 2 },
 +        { "BUTTON", "Quit", 0, 660, 352, 110, 34, ID_QUIT, 0, 2 },
 +    };
@@ -4603,10 +5015,13 @@ index 0000000..49b42cd
 +        int saved = GetPrivateProfileIntA("launcher", "name", 0, ini);
 +        SendMessageA(g.nameBox, CB_SETCURSEL, saved >= 0 && saved < COOP_NAME_COUNT ? saved : 0, 0);
 +    }
-+    static const char *kCounts[] = { "2", "3", "4" };
-+    for (const char *n : kCounts)
-+        SendMessageA(g.players, CB_ADDSTRING, 0, (LPARAM)n);
-+    SendMessageA(g.players, CB_SETCURSEL, savedPlayers >= 2 && savedPlayers <= 4 ? savedPlayers - 2 : 2, 0);
++    for (int n = 2; n <= kMaxPlayers; n++)
++    {
++        char num[8];
++        _snprintf(num, sizeof(num), "%d", n);
++        SendMessageA(g.players, CB_ADDSTRING, 0, (LPARAM)num);
++    }
++    SendMessageA(g.players, CB_SETCURSEL, savedPlayers >= 2 && savedPlayers <= kMaxPlayers ? savedPlayers - 2 : 2, 0);
 +    static const char *kDiffs[] = { "Recruit", "Regular", "Hardened", "Veteran" };
 +    for (const char *d : kDiffs)
 +        SendMessageA(g.diffBox, CB_ADDSTRING, 0, (LPARAM)d);
