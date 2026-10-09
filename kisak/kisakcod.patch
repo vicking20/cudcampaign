@@ -2040,10 +2040,10 @@ index a2d77d7..2ad446c 100644
      SV_InitReliableCommandsForClient(clients);
 diff --git a/src/server/sv_coop.cpp b/src/server/sv_coop.cpp
 new file mode 100644
-index 0000000..7d1dbb0
+index 0000000..7128f59
 --- /dev/null
 +++ b/src/server/sv_coop.cpp
-@@ -0,0 +1,2169 @@
+@@ -0,0 +1,2191 @@
 +// COOP: live replay streaming (spectator mode).
 +//
 +// The SP server records every nondeterministic input into sv.demo.msg (the replay system).
@@ -2088,7 +2088,7 @@ index 0000000..7d1dbb0
 +#define COOP_MAX_LAG_MS 250    // guest fast-forwards when further behind than this
 +#define COOP_TARGET_LAG_MS 100 // ...down to this (must stay > 2 frames)
 +#define COOP_MAP_NAME 64
-+#define COOP_RESET_PREFIX (COOP_MAP_NAME + 16) // reset payload = map name, this guest's player slot (int), kind (int), the host's callsign (int), the game's player count (int), then:
++#define COOP_RESET_PREFIX (COOP_MAP_NAME + 28) // reset payload = map name, this guest's player slot (int), kind (int), the host's callsign (int), the game's player count, enemy multiplier, horde waves and difficulty (ints), then:
 +#define COOP_RESET_START 0    // kind 0: the savegame the host's recording started from (replay from the start)
 +#define COOP_RESET_SNAPSHOT 1 // kind 1: a CoopSnapHeader + three blobs: the game as it is now (late join)
 +
@@ -2333,6 +2333,14 @@ index 0000000..7d1dbb0
 +// tell a guest which map the host is on, which player slot is theirs, and the savegame the host's
 +// recording starts from (sent when the guest connects, and again whenever the host reloads a
 +// checkpoint or changes level)
++// the host's choices that change what the simulation does (how many enemies spawn, horde, difficulty): every
++// machine must run the level with the same values or the games drift apart (entity numbers differ, saves stop fitting)
++static void Coop_WriteHostSettings(unsigned char *payload)
++{
++    int v[4] = { G_CoopReservedSlots(), atoi(Coop_Dvar("coop_enemies")), atoi(Coop_Dvar("coop_horde")), atoi(Coop_Dvar("g_gameskill")) };
++    memcpy(payload + COOP_MAP_NAME + 12, v, sizeof(v));
++}
++
 +static bool Coop_SendResetToGuest(CoopGuestConn &c)
 +{
 +    const unsigned char *save;
@@ -2350,7 +2358,7 @@ index 0000000..7d1dbb0
 +    int kind = COOP_RESET_START;
 +    memcpy(payload + COOP_MAP_NAME + 4, &kind, sizeof(int));
 +    memcpy(payload + COOP_MAP_NAME + 8, &s_playerName[0], sizeof(int));
-+    { int maxp = G_CoopReservedSlots(); memcpy(payload + COOP_MAP_NAME + 12, &maxp, sizeof(int)); }
++    Coop_WriteHostSettings(payload);
 +    memcpy(payload + COOP_RESET_PREFIX, save, saveLen);
 +    Com_Printf(CON_CHANNEL_SERVER, "COOP-HOST: sending '%s' + %d byte start savegame to the guest in slot %d\n", (char *)payload, saveLen, c.slot);
 +    for (int off = 0; off < total;)
@@ -2413,7 +2421,7 @@ index 0000000..7d1dbb0
 +    int kind = COOP_RESET_SNAPSHOT;
 +    memcpy(payload + COOP_MAP_NAME + 4, &kind, sizeof(int));
 +    memcpy(payload + COOP_MAP_NAME + 8, &s_playerName[0], sizeof(int));
-+    { int maxp = G_CoopReservedSlots(); memcpy(payload + COOP_MAP_NAME + 12, &maxp, sizeof(int)); }
++    Coop_WriteHostSettings(payload);
 +    unsigned char *w = payload + COOP_RESET_PREFIX;
 +    memcpy(w, &hdr, sizeof(hdr)); w += sizeof(hdr);
 +    memcpy(w, snap.save, snap.saveLen); w += snap.saveLen;
@@ -3148,6 +3156,10 @@ index 0000000..7d1dbb0
 +    while (s_resetReady)
 +    {
 +        s_resetReady = false;
++        // the replay must not start until the host has finished the frames it will read first: frame 2 of a new
++        // recording, or (snapshot) the frames just past the snapshot point. Starting earlier ran the replay off the
++        // end of the received data, it ended ("End of replay") and the guest stopped following the host.
++        int waitFrame = 2;
 +        if (s_resetSaveLen < COOP_RESET_PREFIX + 16)
 +            return false;
 +        memcpy(&s_resetKind, s_resetSave + COOP_MAP_NAME + 4, sizeof(int));
@@ -3160,6 +3172,7 @@ index 0000000..7d1dbb0
 +                return false;
 +            }
 +            memcpy(&hdr, s_resetSave + COOP_RESET_PREFIX, sizeof(hdr));
++            waitFrame = hdr.nextFramePos + 2;
 +            long long blobs = (long long)s_resetSaveLen - COOP_RESET_PREFIX - (long long)sizeof(hdr);
 +            if (hdr.saveLen < 0 || hdr.cmLen < 0 || hdr.freeLen < 0
 +                || (long long)hdr.saveLen + hdr.cmLen + hdr.freeLen > blobs)
@@ -3196,7 +3209,7 @@ index 0000000..7d1dbb0
 +        sv.demo.msg.cursize = 0;
 +        s_hostFrameDone = -1;
 +        int start = Sys_Milliseconds();
-+        while (s_hostFrameDone < 2 && !s_resetReady && Sys_Milliseconds() - start < 10000)
++        while (s_hostFrameDone < waitFrame && !s_resetReady && Sys_Milliseconds() - start < 10000)
 +        {
 +            if (!Coop_GuestPoll())
 +                return false;
@@ -3204,7 +3217,7 @@ index 0000000..7d1dbb0
 +        }
 +        if (s_resetReady)
 +            continue; // the host reloaded again meanwhile
-+        if (s_hostFrameDone < 2)
++        if (s_hostFrameDone < waitFrame)
 +        {
 +            Com_Printf(CON_CHANNEL_SERVER, "COOP-GUEST: no stream after the host's reload\n");
 +            return false;
@@ -3235,11 +3248,20 @@ index 0000000..7d1dbb0
 +    memcpy(&s_playerName[0], s_resetSave + COOP_MAP_NAME + 8, sizeof(int)); // and what the host is called
 +    {
 +        // how many player slots the host reserved: the level (entity numbering!) must be laid out the same way here
-+        int hostSlots;
-+        memcpy(&hostSlots, s_resetSave + COOP_MAP_NAME + 12, sizeof(int));
++        int hv[4];
++        memcpy(hv, s_resetSave + COOP_MAP_NAME + 12, sizeof(hv));
++        int hostSlots = hv[0], enemies = hv[1], horde = hv[2], skill = hv[3];
 +        if (hostSlots < 2 || hostSlots > COOP_MAX_CLIENTS)
 +            hostSlots = 4;
++        if (enemies < 1 || enemies > 4)
++            enemies = 1;
++        if (horde < 0 || horde > 30)
++            horde = 0;
 +        Dvar_SetIntByName("coop_maxplayers", hostSlots);
++        Dvar_SetIntByName("coop_enemies", enemies);   // same spawn multiplier as the host, or entity numbers drift apart
++        Dvar_SetIntByName("coop_horde", horde);
++        if (skill >= 0 && skill <= 3)
++            Dvar_SetIntByName("coop_difficulty", skill); // the level starts at the host's difficulty
 +    }
 +    if (s_mySlot < 1 || s_mySlot >= COOP_MAX_CLIENTS)
 +        s_mySlot = 1;
