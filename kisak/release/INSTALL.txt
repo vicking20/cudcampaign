@@ -19,8 +19,8 @@ You need your own copy of the 2007 single-player game this was built for. Nothin
 
 Online play needs a relay server (relay\relay.py, Python 3) running somewhere everyone can reach. See relay\README.md.
 Linux / Steam Deck: install Wine, then run coop/play-linux.sh (DXVK is bundled in coop/linux/, nothing to configure).
-  On Linux the game runs inside a Wine "virtual desktop" window (install.sh sets it up, also for starting the exe
-  directly); it stops desktop popups stealing the game's focus. To turn it off: CUD_DESKTOP=0 ./install.sh
+  play-linux.sh runs the game inside a Wine "virtual desktop" window (only for that run, nothing is saved); it stops
+  desktop popups stealing the game's focus on KDE/Wayland. Not needed with gamescope or Steam/Proton. Off: CUD_DESKTOP=0 ./play-linux.sh
   Steam alternative: add KisakCOD-sp.exe as a non-Steam game and force a Proton version.
 
 This is a modified KisakCOD, licensed GPLv3 (see LICENSE-GPLv3.txt). Source and our changes: the project repository,
