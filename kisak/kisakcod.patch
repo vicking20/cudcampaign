@@ -1155,7 +1155,7 @@ index 9e237fd..3282942 100644
      {
          Cmd_Kill_f(v3);
 diff --git a/src/game/g_main.cpp b/src/game/g_main.cpp
-index c23c1d3..136776d 100644
+index c23c1d3..5e1dadc 100644
 --- a/src/game/g_main.cpp
 +++ b/src/game/g_main.cpp
 @@ -3,6 +3,11 @@
@@ -1192,7 +1192,29 @@ index c23c1d3..136776d 100644
      track_static_alloc_internal(g_sentients, 3828, "g_sentients", 5);
      track_static_alloc_internal(entityHandlers, 1188, "entityHandlers", 9);
      track_static_alloc_internal(g_entinfoNames, 28, "g_entinfoNames", 0);
-@@ -1184,14 +1189,18 @@ void __cdecl G_InitGame(
+@@ -1056,6 +1061,21 @@ void __cdecl G_PrintAllFastFileErrors()
+     G_PrintFastFileErrors(sv_mapname->current.string);
+ }
+ 
++// COOP: how many player entity slots (0..n-1) this level reserves. One per player of the game the host chose
++// (coop_maxplayers; a guest copies the host's value before it loads), so a normal game keeps the entity budget the
++// original single-player game had, and a big game only pays for the players it really has.
++int G_CoopReservedSlots()
++{
++    int n = Dvar_GetInt("coop_maxplayers");
++    if (n < 2)
++    {
++        // not set: a plain single-player game reserves one slot; a co-op host that did not say keeps the old default of 4
++        const dvar_s *host = Dvar_FindVar("coop_host");
++        n = (host && atoi(Dvar_DisplayableValue(host)) > 0) ? 4 : 1;
++    }
++    return n > COOP_MAX_CLIENTS ? COOP_MAX_CLIENTS : n;
++}
++
+ void __cdecl G_InitGame(
+     unsigned int randomSeed,
+     int restart,
+@@ -1184,14 +1204,18 @@ void __cdecl G_InitGame(
      {
          Scr_GetChecksum((unsigned int*)v32);
          Header = SaveMemory_GetHeader(*save);
@@ -1209,11 +1231,11 @@ index c23c1d3..136776d 100644
      level.gentities = g_entities;
      g_entities[ENTITYNUM_NONE].flags |= FL_OBSTACLE;
 -    level.maxclients = 1;
-+    level.maxclients = COOP_MAX_CLIENTS;
++    level.maxclients = G_CoopReservedSlots();
      memset(g_clients, 0, sizeof(g_clients));
      level.clients = g_clients;
      level.sentients = g_sentients;
-@@ -1202,19 +1211,14 @@ void __cdecl G_InitGame(
+@@ -1202,19 +1226,14 @@ void __cdecl G_InitGame(
      clients = level.clients;
      if (level.maxclients > 0)
      {
@@ -1238,7 +1260,7 @@ index c23c1d3..136776d 100644
      G_ParseHitLocDmgTable();
      BG_LoadPenetrationDepthTable();
      G_InitVehiclePaths();
-@@ -1353,6 +1357,9 @@ void __cdecl G_LoadNextMap()
+@@ -1353,6 +1372,9 @@ void __cdecl G_LoadNextMap()
      const char *v0; // r4
      char *v1; // r3
  
@@ -1248,7 +1270,7 @@ index c23c1d3..136776d 100644
      if (g_nextMap[0])
      {
          if (Dvar_GetBool("sv_cheats"))
-@@ -1372,6 +1379,7 @@ void __cdecl G_CheckReloadStatus()
+@@ -1372,6 +1394,7 @@ void __cdecl G_CheckReloadStatus()
  {
      const char *v0; // r3
  
@@ -1256,7 +1278,7 @@ index c23c1d3..136776d 100644
      if (level.changelevel)
      {
          level.changelevel = 0;
-@@ -1392,14 +1400,20 @@ void __cdecl G_CheckReloadStatus()
+@@ -1392,14 +1415,20 @@ void __cdecl G_CheckReloadStatus()
              }
              else
              {
@@ -1279,7 +1301,7 @@ index c23c1d3..136776d 100644
          }
          else
          {
-@@ -1412,7 +1426,8 @@ void __cdecl G_CheckReloadStatus()
+@@ -1412,7 +1441,8 @@ void __cdecl G_CheckReloadStatus()
          if (!g_reloading->current.integer)
              MyAssertHandler("c:\\trees\\cod3\\cod3src\\src\\game\\g_main.cpp", 1833, 0, "%s", "g_reloading->current.integer");
          level.absoluteReloadDelayTime = 0;
@@ -1289,7 +1311,7 @@ index c23c1d3..136776d 100644
      }
  }
  
-@@ -1647,6 +1662,13 @@ void __cdecl G_ClientDoPerFrameNotifies(gentity_s *ent)
+@@ -1647,6 +1677,13 @@ void __cdecl G_ClientDoPerFrameNotifies(gentity_s *ent)
      if (!ent)
          MyAssertHandler("c:\\trees\\cod3\\cod3src\\src\\game\\g_main.cpp", 2244, 0, "%s", "ent");
      client = ent->client;
@@ -1303,7 +1325,7 @@ index c23c1d3..136776d 100644
      if (!client)
          MyAssertHandler("c:\\trees\\cod3\\cod3src\\src\\game\\g_main.cpp", 2248, 0, "%s", "client");
      weapon = client->ps.weapon;
-@@ -2339,7 +2361,15 @@ int __cdecl G_RunFrame(ServerFrameExtent extent, int timeCap)
+@@ -2339,7 +2376,15 @@ int __cdecl G_RunFrame(ServerFrameExtent extent, int timeCap)
          PROF_SCOPED("update player");
          G_UpdatePlayer(level.gentities);
          G_UpdatePlayerTriggers(level.gentities);
@@ -1338,7 +1360,7 @@ index 2cd8d76..e2ceaf4 100644
  extern scr_vehicle_s s_vehicles[64];
 \ No newline at end of file
 diff --git a/src/game/g_save.cpp b/src/game/g_save.cpp
-index 152d524..1fe76e0 100644
+index 152d524..4191928 100644
 --- a/src/game/g_save.cpp
 +++ b/src/game/g_save.cpp
 @@ -209,7 +209,7 @@ const saveField_t gentityFields[86] =
@@ -1509,7 +1531,7 @@ index 152d524..1fe76e0 100644
      level.lastFreeEnt = 0;
      num_entities = level.num_entities;
 -    for (j = 1; v6 < num_entities; j = v6)
-+    v6 = COOP_MAX_CLIENTS; // COOP: player slots stay reserved (were: only slot 0), never handed to other entities
++    v6 = level.maxclients; // COOP: player slots stay reserved (were: only slot 0), never handed to other entities
 +    for (j = v6; v6 < num_entities; j = v6)
      {
          v8 = v6;
@@ -2000,10 +2022,10 @@ index a2d77d7..2ad446c 100644
      SV_InitReliableCommandsForClient(clients);
 diff --git a/src/server/sv_coop.cpp b/src/server/sv_coop.cpp
 new file mode 100644
-index 0000000..83cfec6
+index 0000000..2a4bc4a
 --- /dev/null
 +++ b/src/server/sv_coop.cpp
-@@ -0,0 +1,2144 @@
+@@ -0,0 +1,2155 @@
 +// COOP: live replay streaming (spectator mode).
 +//
 +// The SP server records every nondeterministic input into sv.demo.msg (the replay system).
@@ -2041,13 +2063,14 @@ index 0000000..83cfec6
 +extern unsigned int g_coopRecordingGen;                        // sv_demo.cpp
 +static unsigned int s_hostRecGen;                              // recording the guest is following
 +
++int G_CoopReservedSlots(); // game/g_main.cpp: player entity slots the level reserves
 +#define COOP_DEFAULT_PORT 28970
 +#define COOP_MAGIC 0x504F4F43 // 'COOP'
 +#define COOP_MAX_PIECE (16 * 1024)
 +#define COOP_MAX_LAG_MS 250    // guest fast-forwards when further behind than this
 +#define COOP_TARGET_LAG_MS 100 // ...down to this (must stay > 2 frames)
 +#define COOP_MAP_NAME 64
-+#define COOP_RESET_PREFIX (COOP_MAP_NAME + 12) // reset payload = map name, this guest's player slot (int), kind (int), the host's callsign (int), then:
++#define COOP_RESET_PREFIX (COOP_MAP_NAME + 16) // reset payload = map name, this guest's player slot (int), kind (int), the host's callsign (int), the game's player count (int), then:
 +#define COOP_RESET_START 0    // kind 0: the savegame the host's recording started from (replay from the start)
 +#define COOP_RESET_SNAPSHOT 1 // kind 1: a CoopSnapHeader + three blobs: the game as it is now (late join)
 +
@@ -2309,6 +2332,7 @@ index 0000000..83cfec6
 +    int kind = COOP_RESET_START;
 +    memcpy(payload + COOP_MAP_NAME + 4, &kind, sizeof(int));
 +    memcpy(payload + COOP_MAP_NAME + 8, &s_playerName[0], sizeof(int));
++    { int maxp = G_CoopReservedSlots(); memcpy(payload + COOP_MAP_NAME + 12, &maxp, sizeof(int)); }
 +    memcpy(payload + COOP_RESET_PREFIX, save, saveLen);
 +    Com_Printf(CON_CHANNEL_SERVER, "COOP-HOST: sending '%s' + %d byte start savegame to the guest in slot %d\n", (char *)payload, saveLen, c.slot);
 +    for (int off = 0; off < total;)
@@ -2371,6 +2395,7 @@ index 0000000..83cfec6
 +    int kind = COOP_RESET_SNAPSHOT;
 +    memcpy(payload + COOP_MAP_NAME + 4, &kind, sizeof(int));
 +    memcpy(payload + COOP_MAP_NAME + 8, &s_playerName[0], sizeof(int));
++    { int maxp = G_CoopReservedSlots(); memcpy(payload + COOP_MAP_NAME + 12, &maxp, sizeof(int)); }
 +    unsigned char *w = payload + COOP_RESET_PREFIX;
 +    memcpy(w, &hdr, sizeof(hdr)); w += sizeof(hdr);
 +    memcpy(w, snap.save, snap.saveLen); w += snap.saveLen;
@@ -3190,6 +3215,14 @@ index 0000000..83cfec6
 +    }
 +    memcpy(&s_mySlot, s_resetSave + COOP_MAP_NAME, sizeof(int)); // which player this guest is
 +    memcpy(&s_playerName[0], s_resetSave + COOP_MAP_NAME + 8, sizeof(int)); // and what the host is called
++    {
++        // how many player slots the host reserved: the level (entity numbering!) must be laid out the same way here
++        int hostSlots;
++        memcpy(&hostSlots, s_resetSave + COOP_MAP_NAME + 12, sizeof(int));
++        if (hostSlots < 2 || hostSlots > COOP_MAX_CLIENTS)
++            hostSlots = 4;
++        Dvar_SetIntByName("coop_maxplayers", hostSlots);
++    }
 +    if (s_mySlot < 1 || s_mySlot >= COOP_MAX_CLIENTS)
 +        s_mySlot = 1;
 +    if (I_stricmp(hostMap, Coop_Dvar("mapname")))
@@ -4707,10 +4740,10 @@ index 0000000..0db1b32
 +}
 diff --git a/src/win32/win_coop_launcher.cpp b/src/win32/win_coop_launcher.cpp
 new file mode 100644
-index 0000000..a0a264d
+index 0000000..ec65b12
 --- /dev/null
 +++ b/src/win32/win_coop_launcher.cpp
-@@ -0,0 +1,359 @@
+@@ -0,0 +1,363 @@
 +// COOP: pre-game launcher window. Shown by WinMain when the game is started without any command line
 +// (so a Steam shortcut / double click gets a menu, while scripts that pass options skip it).
 +// Plain Win32 controls only: works under Wine/gamescope and needs no resources or extra files.
@@ -4763,14 +4796,14 @@ index 0000000..a0a264d
 +const int kMaxPlayers = 32; // = COOP_MAX_CLIENTS in universal/q_shared.h
 +
 +enum { ID_SINGLE = 101, ID_HOST, ID_JOIN, ID_HOSTONLINE, ID_JOINONLINE,   // the five modes (radio group)
-+       ID_MAP, ID_ADDR, ID_RELAY, ID_PASS, ID_PLAYERS, ID_NAME, ID_DIFF, ID_ENEMIES, ID_WAVES, ID_START, ID_QUIT };
++       ID_MAP, ID_ADDR, ID_RELAY, ID_PASS, ID_PLAYERS, ID_NAME, ID_DIFF, ID_ENEMIES, ID_WAVES, ID_FULLSCREEN, ID_START, ID_QUIT };
 +const int kW = 800, kH = 470, kTop = 52; // wide window: mode + mission on the left, settings on the right; kTop = title band
 +const COLORREF kBg = RGB(28, 31, 26), kFg = RGB(222, 224, 208);
 +
 +struct State
 +{
 +    bool done, start;
-+    HWND single, host, join, hostOnline, joinOnline, map, addr, addrLabel, relayBox, pass, mapLabel, note, win, players, nameBox, diffBox, enemiesBox, wavesBox;
++    HWND fullscreen, single, host, join, hostOnline, joinOnline, map, addr, addrLabel, relayBox, pass, mapLabel, note, win, players, nameBox, diffBox, enemiesBox, wavesBox;
 +    HWND lower[20];   // the settings column
 +    int lowerGroup[20], lowerCount; // group 1 = host-only rows (hidden for guests)
 +    HBRUSH bg;
@@ -4863,6 +4896,7 @@ index 0000000..a0a264d
 +    char nameStr[8];
 +    _snprintf(nameStr, sizeof(nameStr), "%d", nameSel);
 +    WritePrivateProfileStringA("launcher", "name", nameStr, ini);
++    WritePrivateProfileStringA("launcher", "fullscreen", Checked(g.fullscreen) ? "1" : "0", ini);
 +
 +    char pw[96] = "";
 +    if (pass[0])
@@ -4886,6 +4920,7 @@ index 0000000..a0a264d
 +    else
 +        _snprintf(g.cmd, sizeof(g.cmd), " " kQuiet); // single player: the normal main menu (debug overlays still off)
 +    g.cmd[sizeof(g.cmd) - 1] = 0;
++    strncat(g.cmd, Checked(g.fullscreen) ? " +set r_fullscreen 1" : " +set r_fullscreen 0", sizeof(g.cmd) - strlen(g.cmd) - 1);
 +    g.start = true;
 +    g.done = true;
 +}
@@ -5009,7 +5044,8 @@ index 0000000..a0a264d
 +        { "COMBOBOX", "", CBS_DROPDOWNLIST | WS_VSCROLL, 540, 230, 160, 120, ID_ENEMIES, &g.enemiesBox, 1 },
 +        { "STATIC", "Horde waves:", 0, 420, 270, 110, 18, 0, 0, 1 },
 +        { "COMBOBOX", "", CBS_DROPDOWNLIST | WS_VSCROLL, 540, 266, 160, 120, ID_WAVES, &g.wavesBox, 1 },
-+        { "STATIC", "Password empty = open game. Over 16 players is experimental.", 0, 420, 312, 350, 18, 0, 0, 2 },
++        { "BUTTON", "Fullscreen", BS_AUTOCHECKBOX, 540, 298, 160, 20, ID_FULLSCREEN, &g.fullscreen, 0 },
++        { "STATIC", "Password empty = open game. Over 16 players is experimental.", 0, 420, 326, 350, 18, 0, 0, 2 },
 +        { "BUTTON", "Start", BS_DEFPUSHBUTTON, 540, 352, 110, 34, ID_START, 0, 2 },
 +        { "BUTTON", "Quit", 0, 660, 352, 110, 34, ID_QUIT, 0, 2 },
 +    };
@@ -5049,6 +5085,7 @@ index 0000000..a0a264d
 +    for (const char *w : kWaves)
 +        SendMessageA(g.wavesBox, CB_ADDSTRING, 0, (LPARAM)w);
 +    SendMessageA(g.wavesBox, CB_SETCURSEL, GetPrivateProfileIntA("launcher", "waves", 0, ini) % 5, 0);
++    SendMessageA(g.fullscreen, BM_SETCHECK, GetPrivateProfileIntA("launcher", "fullscreen", 0, ini) ? BST_CHECKED : BST_UNCHECKED, 0);
 +    int sel = !strcmp(mode, "host") ? ID_HOST : !strcmp(mode, "join") ? ID_JOIN : !strcmp(mode, "hostonline") ? ID_HOSTONLINE : !strcmp(mode, "joinonline") ? ID_JOINONLINE : ID_SINGLE;
 +    CheckRadioButton(win, ID_SINGLE, ID_JOINONLINE, sel);
 +    g.done = g.start = false;
