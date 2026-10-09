@@ -500,7 +500,7 @@ index e9515d9..f1cff9f 100644
  
  #ifdef KISAK_MP
 diff --git a/src/client/cl_main.cpp b/src/client/cl_main.cpp
-index b9009d8..968749f 100644
+index b9009d8..3b63c05 100644
 --- a/src/client/cl_main.cpp
 +++ b/src/client/cl_main.cpp
 @@ -800,6 +800,9 @@ void __cdecl CheckForConsoleGuidePause(int localClientNum)
@@ -563,6 +563,23 @@ index b9009d8..968749f 100644
      Hunk_CheckTempMemoryClear();
      Hunk_CheckTempMemoryHighClear();
      //PIXSetMarker(0xFFFFFFFF, "CL_Frame");
+@@ -1337,6 +1383,16 @@ void __cdecl CL_StopControllerRumbles()
+ 
+ void CL_Pause_f()
+ {
++    {
++        // COOP: in a shared game the Pause key opens/closes the menu over the running game instead of pausing it
++        extern bool SV_CoopNoPause(); // server/sv_coop.cpp
++        if (SV_CoopNoPause())
++        {
++            bool menuUp = (clientUIActives[0].keyCatchers & KEYCATCH_UI) && UI_GetActiveMenu(0) == UIMENU_INGAME;
++            UI_SetActiveMenu(0, menuUp ? UIMENU_NONE : UIMENU_INGAME);
++            return;
++        }
++    }
+     const dvar_s *v0; // r3
+     uiMenuCommand_t ActiveMenu; // r3
+     char v2; // r11
 diff --git a/src/game/actor.cpp b/src/game/actor.cpp
 index 2027ce7..7ff6e7c 100644
 --- a/src/game/actor.cpp
@@ -2097,10 +2114,10 @@ index a2d77d7..2ad446c 100644
      SV_InitReliableCommandsForClient(clients);
 diff --git a/src/server/sv_coop.cpp b/src/server/sv_coop.cpp
 new file mode 100644
-index 0000000..5cbad83
+index 0000000..c7ea6eb
 --- /dev/null
 +++ b/src/server/sv_coop.cpp
-@@ -0,0 +1,2254 @@
+@@ -0,0 +1,2286 @@
 +// COOP: live replay streaming (spectator mode).
 +//
 +// The SP server records every nondeterministic input into sv.demo.msg (the replay system).
@@ -2142,8 +2159,16 @@ index 0000000..5cbad83
 +#define COOP_DEFAULT_PORT 28970
 +#define COOP_MAGIC 0x504F4F43 // 'COOP'
 +#define COOP_MAX_PIECE (16 * 1024)
-+#define COOP_MAX_LAG_MS 250    // guest fast-forwards when further behind than this
-+#define COOP_TARGET_LAG_MS 100 // ...down to this (must stay > 2 frames)
++// the guest plays a little behind the host so late packets (internet, relay) are absorbed instead of stalling a frame:
++// +set coop_buffer <ms> (default 150). It fast-forwards only when much further behind than that.
++static int Coop_BufferMs()
++{
++    const dvar_s *d = Dvar_FindVar("coop_buffer");
++    int ms = d && *Dvar_DisplayableValue(d) ? atoi(Dvar_DisplayableValue(d)) : 150;
++    return ms < 0 ? 0 : ms > 1000 ? 1000 : ms;
++}
++#define COOP_MAX_LAG_MS (Coop_BufferMs() + 250)   // guest fast-forwards when further behind than this
++#define COOP_TARGET_LAG_MS (Coop_BufferMs() + 100) // ...down to this (must stay > 2 frames)
 +#define COOP_MAP_NAME 64
 +#define COOP_SYNC_DVARS 512 // "name\tvalue\n" lines of the host's simulation settings (see kCoopSyncDvars)
 +#define COOP_RESET_PREFIX (COOP_MAP_NAME + 28 + COOP_SYNC_DVARS) // reset payload = map name, this guest's player slot (int), kind (int), the host's callsign (int), the game's player count, enemy multiplier, horde waves and difficulty (ints), then:
@@ -3523,7 +3548,7 @@ index 0000000..5cbad83
 +    }
 +
 +    // frame N = framePos+1 reads ahead into frame N+1, so the host must have finished N+1
-+    int need = G_GetFramePos() + 2;
++    int need = G_GetFramePos() + 2 + Coop_BufferMs() / 50; // a few frames of buffer against network jitter
 +    int start = Sys_Milliseconds();
 +    while (s_hostFrameDone < need)
 +    {
@@ -4337,6 +4362,30 @@ index 0000000..5cbad83
 +    return s_gstate == GUEST_FOLLOWING;
 +}
 +
++// the replay reader reached the end of the bytes received so far (host paused, a late packet, a hitch): wait for more
++// instead of ending the replay - an ended replay stops following the host for good ("End of replay", frozen guest)
++void SV_CoopGuestWaitForStream()
++{
++    int start = Sys_Milliseconds(), lastNote = start;
++    while (sv.demo.msg.readcount >= sv.demo.msg.cursize)
++    {
++        if (!Coop_GuestPoll() || s_resetReady)
++            return; // connection gone, or the host reloaded: let the normal paths handle it
++        int now = Sys_Milliseconds();
++        if (now - lastNote > 5000)
++        {
++            lastNote = now;
++            Com_Printf(CON_CHANNEL_SERVER, "COOP-GUEST: waiting for the host (paused or slow connection)\n");
++        }
++        if (now - start > 60000)
++        {
++            Coop_GuestFail("the host stopped sending");
++            return;
++        }
++        Sleep(1);
++    }
++}
++
 +// the pause menu must not stop the game while other people are playing: a paused guest falls behind the host and
 +// has to fast-forward (a long freeze, sometimes with dead input) and a paused host freezes everybody
 +bool SV_CoopNoPause()
@@ -4356,7 +4405,7 @@ index 0000000..5cbad83
 +    Com_Printf(CON_CHANNEL_SERVER, "COOP: player %d respawned at frame %d\n", n, G_GetFramePos());
 +}
 diff --git a/src/server/sv_demo.cpp b/src/server/sv_demo.cpp
-index 53108d8..6a686cd 100644
+index 53108d8..b1e9f2a 100644
 --- a/src/server/sv_demo.cpp
 +++ b/src/server/sv_demo.cpp
 @@ -22,7 +22,9 @@
@@ -4553,7 +4602,26 @@ index 53108d8..6a686cd 100644
          sv.demo.recording = 1;
          if (sv.demo.startLive)
          {
-@@ -2001,6 +2125,8 @@ void SV_ReadNextDemoType()
+@@ -1980,6 +2104,9 @@ void __cdecl SV_EndDemo(bool error)
+     }
+ }
+ 
++bool SV_CoopIsGuest();            // sv_coop.cpp
++void SV_CoopGuestWaitForStream(); // sv_coop.cpp
++
+ void SV_ReadNextDemoType()
+ {
+     int Byte; // r3
+@@ -1994,6 +2121,8 @@ void SV_ReadNextDemoType()
+     }
+     else
+     {
++        if (SV_CoopIsGuest())
++            SV_CoopGuestWaitForStream(); // COOP: wait for the host's next bytes instead of ending the replay
+         Byte = MSG_ReadByte(&sv.demo.msg);
+         sv.demo.readType = Byte;
+         switch (Byte)
+@@ -2001,6 +2130,8 @@ void SV_ReadNextDemoType()
          case 0:
          case 2:
          case 6:
@@ -4562,7 +4630,7 @@ index 53108d8..6a686cd 100644
              sv.demo.nextFramePos = MSG_ReadLong(&sv.demo.msg);
              break;
          case 1:
-@@ -2104,6 +2230,8 @@ bool __cdecl SV_InitDemo(int *randomSeed)
+@@ -2104,6 +2235,8 @@ bool __cdecl SV_InitDemo(int *randomSeed)
      return 0;
  }
  
@@ -4571,7 +4639,7 @@ index 53108d8..6a686cd 100644
  bool __cdecl SV_ReadPacket(int framePos)
  {
      bool result; // r3
-@@ -2126,6 +2254,8 @@ bool __cdecl SV_ReadPacket(int framePos)
+@@ -2126,6 +2259,8 @@ bool __cdecl SV_ReadPacket(int framePos)
                  CL_ClearClientThinkPacket();
                  goto LABEL_18;
              }
@@ -4774,7 +4842,7 @@ index 3698871..fd50ab5 100644
          clientNum = frames->clientNum;
          if (clientNum >= 0x880)
 diff --git a/src/ui/ui_main.cpp b/src/ui/ui_main.cpp
-index 6bc7e85..1a1d8ba 100644
+index 6bc7e85..8637cbc 100644
 --- a/src/ui/ui_main.cpp
 +++ b/src/ui/ui_main.cpp
 @@ -1142,11 +1142,14 @@ const char *__cdecl UI_GetSavegameInfo()
@@ -4801,6 +4869,16 @@ index 6bc7e85..1a1d8ba 100644
      int result; // r3
      uiMenuCommand_t v4; // r11
      const char *String; // r3
+@@ -2528,7 +2532,8 @@ int __cdecl UI_SetActiveMenu(int localClientNum, uiMenuCommand_t menu)
+         }
+         else
+         {
+-            Dvar_SetIntByName("cl_paused", 1);
++            if (!SV_CoopNoPause()) // COOP: in a shared game Esc opens the menu over the running game (no pause)
++                Dvar_SetIntByName("cl_paused", 1);
+             Key_SetCatcher(0, KEYCATCH_UI);
+             Menus_OpenByName(&uiInfo.uiDC, "pausedmenu");
+             result = 1;
 diff --git a/src/universal/com_files.cpp b/src/universal/com_files.cpp
 index 7e7ea0b..767b38c 100644
 --- a/src/universal/com_files.cpp
