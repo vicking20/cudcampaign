@@ -4671,7 +4671,7 @@ index 3698871..fd50ab5 100644
          clientNum = frames->clientNum;
          if (clientNum >= 0x880)
 diff --git a/src/ui/ui_main.cpp b/src/ui/ui_main.cpp
-index 6bc7e85..75a0693 100644
+index 6bc7e85..1a1d8ba 100644
 --- a/src/ui/ui_main.cpp
 +++ b/src/ui/ui_main.cpp
 @@ -1142,11 +1142,14 @@ const char *__cdecl UI_GetSavegameInfo()
@@ -4690,6 +4690,14 @@ index 6bc7e85..75a0693 100644
          Key_SetCatcher(localClientNum, KEYCATCH_UI);
      }
      else
+@@ -2482,6 +2485,7 @@ void __cdecl UI_RunMenuScript(int localClientNum, const char **args, const char
+ 
+ int __cdecl UI_SetActiveMenu(int localClientNum, uiMenuCommand_t menu)
+ {
++    Com_Printf(CON_CHANNEL_SYSTEM, "COOP-UI: active menu -> %d\n", (int)menu); // which menu opens and when (diagnosing menus that appear by themselves)
+     int result; // r3
+     uiMenuCommand_t v4; // r11
+     const char *String; // r3
 diff --git a/src/universal/com_files.cpp b/src/universal/com_files.cpp
 index 7e7ea0b..767b38c 100644
 --- a/src/universal/com_files.cpp
@@ -5245,3 +5253,16 @@ index 471b763..f157162 100644
  			Sys_CreateSplashWindow();
  			Sys_ShowSplashWindow();
  			Win_RegisterClass();
+diff --git a/src/win32/win_wndproc.cpp b/src/win32/win_wndproc.cpp
+index 53a7d49..ffe50eb 100644
+--- a/src/win32/win_wndproc.cpp
++++ b/src/win32/win_wndproc.cpp
+@@ -252,6 +252,8 @@ void __cdecl VID_AppActivate(uint32_t activeState, int minimize)
+ {
+ 	BOOL v2; // [esp+0h] [ebp-8h]
+ 
++	if ((activeState != 0) != (g_wv.activeApp != 0) || (minimize != 0) != (g_wv.isMinimized != 0))
++		Com_Printf(CON_CHANNEL_SYSTEM, "COOP-UI: window %s%s\n", activeState ? "focused" : "lost focus", minimize ? " (minimized)" : ""); // diagnosing pauses/dead input
+ 	g_wv.isMinimized = minimize;
+ 	Key_ClearStates(0);
+ 	v2 = activeState && !g_wv.isMinimized;
