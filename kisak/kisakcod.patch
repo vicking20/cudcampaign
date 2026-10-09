@@ -1584,10 +1584,10 @@ index a2d77d7..2ad446c 100644
      SV_InitReliableCommandsForClient(clients);
 diff --git a/src/server/sv_coop.cpp b/src/server/sv_coop.cpp
 new file mode 100644
-index 0000000..0ab845e
+index 0000000..bdfa3fa
 --- /dev/null
 +++ b/src/server/sv_coop.cpp
-@@ -0,0 +1,2015 @@
+@@ -0,0 +1,2134 @@
 +// COOP: live replay streaming (spectator mode).
 +//
 +// The SP server records every nondeterministic input into sv.demo.msg (the replay system).
@@ -1664,7 +1664,17 @@ index 0000000..0ab845e
 +// on-screen line for everybody (same text as the script command iprintln)
 +static void Coop_Announce(const char *text)
 +{
-+    SV_GameSendServerCommand(-1, va("gm \"%s\"", text));
++    // text can contain things a relay or a host sent (room code, error line): never let it end the quoted
++    // string or start another command
++    char safe[128];
++    int n = 0;
++    for (; text && text[n] && n < (int)sizeof(safe) - 1; n++)
++    {
++        unsigned char c = (unsigned char)text[n];
++        safe[n] = (c < 32 || c > 126 || c == '"' || c == '\\' || c == ';' || c == '%') ? ' ' : (char)c;
++    }
++    safe[n] = 0;
++    SV_GameSendServerCommand(-1, va("gm \"%s\"", safe));
 +}
 +
 +#define COOP_HELLO_MAGIC 0x314C4548 // 'HEL1' guest -> host: first thing sent, carries the password hash
@@ -1685,6 +1695,45 @@ index 0000000..0ab845e
 +    for (; *pw; pw++)
 +        h = (h ^ (unsigned char)*pw) * 16777619u;
 +    return h ? h : 1;
++}
++
++// ---- input from the other side of the connection is hostile until proven otherwise
++#define COOP_MAX_SAVE (64 * 1024 * 1024) // largest start savegame / snapshot a guest will accept
++
++// a map name from the host: 1..63 of letters, digits, underscore, with a terminating NUL inside the 64 bytes
++static bool Coop_ValidMapName(const char *name, int bufLen)
++{
++    int n = 0;
++    while (n < bufLen && name[n])
++    {
++        unsigned char c = (unsigned char)name[n];
++        if (!(isalnum(c) || c == '_'))
++            return false;
++        n++;
++    }
++    return n > 0 && n < bufLen;
++}
++
++static float Coop_SaneFloat(float f)
++{
++    return (f != f || f > 100000.0f || f < -100000.0f) ? 0.0f : f; // NaN or absurd -> 0
++}
++
++// a usercmd that came off the network: keep the values the game indexes tables with inside their tables, and
++// floats finite, so a hostile peer cannot crash everybody's replay with them
++static void Coop_SanitizeCmd(usercmd_s *c)
++{
++    unsigned int numWeapons = BG_GetNumWeapons();
++    if (c->weapon >= numWeapons)
++        c->weapon = 0;
++    if (c->offHandIndex >= numWeapons)
++        c->offHandIndex = 0;
++    c->gunPitch = Coop_SaneFloat(c->gunPitch);
++    c->gunYaw = Coop_SaneFloat(c->gunYaw);
++    c->gunXOfs = Coop_SaneFloat(c->gunXOfs);
++    c->gunYOfs = Coop_SaneFloat(c->gunYOfs);
++    c->gunZOfs = Coop_SaneFloat(c->gunZOfs);
++    c->meleeChargeYaw = Coop_SaneFloat(c->meleeChargeYaw);
 +}
 +
 +struct CoopCmdPacket
@@ -1958,7 +2007,33 @@ index 0000000..0ab845e
 +}
 +
 +// a new guest connection (from the listen socket or from the relay): password check, then slot + backlog
-+static void Coop_AdmitGuest(SOCKET g, CoopGuestConn *free_c)
++// addresses that just failed the hello (nothing sent, wrong password): refused instantly for a few seconds, so a
++// flood of dead connections cannot keep the host waiting on each one
++static struct { unsigned long ip; DWORD until; } s_banned[16];
++static bool Coop_IsBanned(unsigned long ip)
++{
++    DWORD now = GetTickCount();
++    for (auto &b : s_banned)
++        if (b.ip == ip && (int)(b.until - now) > 0)
++            return true;
++    return false;
++}
++static void Coop_Ban(unsigned long ip)
++{
++    if (!ip)
++        return;
++    int slot = 0;
++    for (int i = 0; i < 16; i++)
++    {
++        if (s_banned[i].ip == ip) { slot = i; break; }
++        if ((int)(s_banned[i].until - s_banned[slot].until) < 0)
++            slot = i;
++    }
++    s_banned[slot].ip = ip;
++    s_banned[slot].until = GetTickCount() + 8000;
++}
++
++static void Coop_AdmitGuest(SOCKET g, CoopGuestConn *free_c, unsigned long peerIp = 0)
 +{
 +    u_long nb = 0;
 +    ioctlsocket(g, FIONBIO, &nb); // blocking sends: small chunks on a LAN
@@ -1966,8 +2041,9 @@ index 0000000..0ab845e
 +    setsockopt(g, IPPROTO_TCP, TCP_NODELAY, (const char *)&one, sizeof(one));
 +    DWORD sendTimeout = 20000; // a stalled guest must not freeze the host (a level load takes a while)
 +    setsockopt(g, SOL_SOCKET, SO_SNDTIMEO, (const char *)&sendTimeout, sizeof(sendTimeout));
-+    // the guest's first message is its hello (password hash); wait a moment for it
-+    DWORD rcvTimeout = 3000;
++    // the guest's first message is its hello (password hash); wait a moment for it (the relay only pairs a guest that
++    // has already sent a valid hello, so the relay path never really waits)
++    DWORD rcvTimeout = peerIp ? 500 : 1500;
 +    setsockopt(g, SOL_SOCKET, SO_RCVTIMEO, (const char *)&rcvTimeout, sizeof(rcvTimeout));
 +    CoopHello hello;
 +    int got = 0;
@@ -1986,6 +2062,7 @@ index 0000000..0ab845e
 +    if (got < (int)sizeof(hello) || hello.magic != COOP_HELLO_MAGIC || (want && hello.passwordHash != want))
 +    {
 +        Com_Printf(CON_CHANNEL_SERVER, "COOP-HOST: guest refused (%s)\n", got < (int)sizeof(hello) ? "no hello" : "wrong password");
++        Coop_Ban(peerIp);
 +        closesocket(g);
 +        return;
 +    }
@@ -2034,10 +2111,17 @@ index 0000000..0ab845e
 +    CoopGuestConn *c = Coop_FreeConn();
 +    if (!c)
 +        return;
-+    SOCKET g = accept(s_listen, 0, 0);
++    sockaddr_in peer = {};
++    int peerLen = sizeof(peer);
++    SOCKET g = accept(s_listen, (sockaddr *)&peer, &peerLen);
 +    if (g == INVALID_SOCKET)
 +        return;
-+    Coop_AdmitGuest(g, c);
++    if (Coop_IsBanned(peer.sin_addr.s_addr))
++    {
++        closesocket(g);
++        return;
++    }
++    Coop_AdmitGuest(g, c, peer.sin_addr.s_addr ? peer.sin_addr.s_addr : 1);
 +}
 +
 +// ---- relay (see kisak/relay/relay.py): both sides connect OUT to it and meet by room code
@@ -2187,6 +2271,7 @@ index 0000000..0ab845e
 +    }
 +
 +    // control line: "GUEST <id>\n" for every guest that wants in
++    int handledGuests = 0;
 +    for (;;)
 +    {
 +        int n = recv(s_relayCtl, s_relayBuf + s_relayBufLen, (int)sizeof(s_relayBuf) - 1 - s_relayBufLen, 0);
@@ -2211,11 +2296,14 @@ index 0000000..0ab845e
 +        {
 +            *nl = 0;
 +            char id[32] = {};
++            if (handledGuests >= 1)
++                break; // one admission per frame: each one can block briefly
 +            if (sscanf(s_relayBuf, "GUEST %31s", id) == 1)
 +            {
++                handledGuests++;
 +                CoopGuestConn *fc = Coop_FreeConn();
 +                SOCKET d;
-+                if (fc && Coop_ConnectTcp(relay, 28999, 3000, &d))
++                if (fc && Coop_ConnectTcp(relay, 28999, 1500, &d))
 +                {
 +                    char hello[96];
 +                    int hl = _snprintf(hello, sizeof(hello), "DATA %s %s\n", s_room, id);
@@ -2337,6 +2425,7 @@ index 0000000..0ab845e
 +                    Coop_DropGuest(c, "bad input stream");
 +                    break;
 +                }
++                Coop_SanitizeCmd(&pkt.cmd);
 +                SV_CoopSetNetCmd(c.slot, &pkt.cmd);
 +            }
 +            if (!c.used)
@@ -2420,17 +2509,27 @@ index 0000000..0ab845e
 +                Com_Printf(CON_CHANNEL_SERVER, "COOP-GUEST: bad stream\n");
 +                return false;
 +            }
-+            if (s_rxLen - pos < (int)(sizeof(h) + h.len))
++            if (h.len > COOP_MAX_PIECE) // the host never sends more than this in one chunk
++            {
++                Com_Printf(CON_CHANNEL_SERVER, "COOP-GUEST: bad chunk length\n");
++                return false;
++            }
++            if ((long long)(s_rxLen - pos) < (long long)sizeof(h) + (long long)h.len)
 +                break;
 +            if (h.frameDone == COOP_FRAME_RESET)
 +            {
 +                if (h.offset == 0)
 +                {
++                    if (h.hostTime < COOP_RESET_PREFIX + 16 || h.hostTime > COOP_MAX_SAVE)
++                    {
++                        Com_Printf(CON_CHANNEL_SERVER, "COOP-GUEST: bad start savegame size\n");
++                        return false;
++                    }
 +                    free(s_resetSave);
 +                    s_resetSave = (unsigned char *)malloc(h.hostTime);
-+                    s_resetSaveLen = h.hostTime;
++                    s_resetSaveLen = s_resetSave ? h.hostTime : 0;
 +                }
-+                if (!s_resetSave || h.offset + h.len > (unsigned int)s_resetSaveLen)
++                if (!s_resetSave || (long long)h.offset + (long long)h.len > (long long)s_resetSaveLen)
 +                {
 +                    Com_Printf(CON_CHANNEL_SERVER, "COOP-GUEST: bad start savegame piece\n");
 +                    return false;
@@ -2444,7 +2543,7 @@ index 0000000..0ab845e
 +                }
 +                continue;
 +            }
-+            if (h.offset + h.len > (unsigned int)sv.demo.msg.maxsize)
++            if ((long long)h.offset + (long long)h.len > (long long)sv.demo.msg.maxsize)
 +            {
 +                Com_Printf(CON_CHANNEL_SERVER, "COOP-GUEST: stream exceeds replay buffer\n");
 +                return false;
@@ -2584,11 +2683,25 @@ index 0000000..0ab845e
 +    while (s_resetReady)
 +    {
 +        s_resetReady = false;
++        if (s_resetSaveLen < COOP_RESET_PREFIX + 16)
++            return false;
 +        memcpy(&s_resetKind, s_resetSave + COOP_MAP_NAME + 4, sizeof(int));
 +        if (s_resetKind == COOP_RESET_SNAPSHOT)
 +        {
 +            CoopSnapHeader hdr;
++            if ((long long)s_resetSaveLen < (long long)COOP_RESET_PREFIX + (long long)sizeof(hdr))
++            {
++                Com_Printf(CON_CHANNEL_SERVER, "COOP-GUEST: snapshot too short\n");
++                return false;
++            }
 +            memcpy(&hdr, s_resetSave + COOP_RESET_PREFIX, sizeof(hdr));
++            long long blobs = (long long)s_resetSaveLen - COOP_RESET_PREFIX - (long long)sizeof(hdr);
++            if (hdr.saveLen < 0 || hdr.cmLen < 0 || hdr.freeLen < 0
++                || (long long)hdr.saveLen + hdr.cmLen + hdr.freeLen > blobs)
++            {
++                Com_Printf(CON_CHANNEL_SERVER, "COOP-GUEST: snapshot sizes do not fit\n");
++                return false;
++            }
 +            const unsigned char *r = s_resetSave + COOP_RESET_PREFIX + sizeof(hdr);
 +            CoopSnapshot snap;
 +            memset(&snap, 0, sizeof(snap));
@@ -2602,11 +2715,12 @@ index 0000000..0ab845e
 +            SV_CoopInstallSnapshot(&snap); // copies
 +            for (int n = 0; n < COOP_MAX_CLIENTS; n++)
 +            {
-+                s_snapFix.active[n] = hdr.slots[n].active;
-+                s_snapFix.name[n] = hdr.slots[n].name;
++                s_snapFix.active[n] = hdr.slots[n].active != 0;
++                s_snapFix.name[n] = (hdr.slots[n].name >= 0 && hdr.slots[n].name < COOP_NAME_COUNT) ? hdr.slots[n].name : -1;
 +                s_snapFix.cmd[n] = hdr.slots[n].lastUsercmd;
++                Coop_SanitizeCmd(&s_snapFix.cmd[n]);
 +            }
-+            s_snapFix.bodyEnt = hdr.bodyEnt;
++            s_snapFix.bodyEnt = (hdr.bodyEnt >= -1 && hdr.bodyEnt < 1024) ? hdr.bodyEnt : -1;
 +            s_snapFixPending = true;
 +        }
 +        else if (!SV_CoopSetDemoSave(s_resetSave + COOP_RESET_PREFIX, s_resetSaveLen - COOP_RESET_PREFIX))
@@ -2647,6 +2761,11 @@ index 0000000..0ab845e
 +static bool Coop_GuestApplyReset()
 +{
 +    const char *hostMap = (const char *)s_resetSave;
++    if (s_resetSaveLen < COOP_RESET_PREFIX || !Coop_ValidMapName(hostMap, COOP_MAP_NAME))
++    {
++        Com_Printf(CON_CHANNEL_SERVER, "COOP-GUEST: the host sent an invalid map name\n");
++        return false;
++    }
 +    memcpy(&s_mySlot, s_resetSave + COOP_MAP_NAME, sizeof(int)); // which player this guest is
 +    memcpy(&s_playerName[0], s_resetSave + COOP_MAP_NAME + 8, sizeof(int)); // and what the host is called
 +    if (s_mySlot < 1 || s_mySlot >= COOP_MAX_CLIENTS)
