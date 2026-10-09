@@ -104,6 +104,46 @@ index c6fbcd3..16c725b 100644
      case ET_INVISIBLE:
          return;
      case ET_ITEM:
+diff --git a/src/cgame/cg_hudelem.cpp b/src/cgame/cg_hudelem.cpp
+index 61aa813..50a505d 100644
+--- a/src/cgame/cg_hudelem.cpp
++++ b/src/cgame/cg_hudelem.cpp
+@@ -441,8 +441,35 @@ void __cdecl CG_Draw2dHudElems(int32_t localClientNum, int32_t foreground)
+     }
+ }
+ 
++bool SV_CoopIsGuest(); // server/sv_coop.cpp
++
++// COOP: the single-player health scripts (maps/_gameskill.gsc) draw player 0's damage feedback - the red low-health
++// overlay and the "get to cover" warning - as global HUD elements, so a guest saw the host's injuries on its own
++// screen. On a guest those are skipped; the guest still gets the engine's own damage effects for its player.
++static bool CG_CoopHideHostOnlyHudElem(int localClientNum, const hudelem_s *elem)
++{
++    if (!SV_CoopIsGuest())
++        return false;
++    if (elem->materialIndex)
++    {
++        char name[64];
++        if (CG_ServerMaterialName(localClientNum, elem->materialIndex, name, sizeof(name))
++            && (!I_stricmp(name, "overlay_low_health") || !I_stricmp(name, "overlay_low_health_compass") || !I_stricmp(name, "popmenu_bg")))
++            return true;
++    }
++    if (elem->text)
++    {
++        const char *key = CL_GetConfigString(localClientNum, CS_LOCALIZED_STRINGS + elem->text);
++        if (key && !I_stricmp(key, "GAME_GET_TO_COVER"))
++            return true;
++    }
++    return false;
++}
++
+ void __cdecl DrawSingleHudElem2d(int32_t localClientNum, const hudelem_s *elem)
+ {
++    if (CG_CoopHideHostOnlyHudElem(localClientNum, elem))
++        return;
+     char hudElemString[256]; // [esp+8h] [ebp-340h] BYREF
+     cg_hudelem_t cghe; // [esp+108h] [ebp-240h] BYREF
+     hudelem_color_t toColor; // [esp+344h] [ebp-4h] BYREF
 diff --git a/src/cgame/cg_main.cpp b/src/cgame/cg_main.cpp
 index 484dba7..1ced8b8 100644
 --- a/src/cgame/cg_main.cpp
