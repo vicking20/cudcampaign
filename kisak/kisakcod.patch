@@ -1584,10 +1584,10 @@ index a2d77d7..2ad446c 100644
      SV_InitReliableCommandsForClient(clients);
 diff --git a/src/server/sv_coop.cpp b/src/server/sv_coop.cpp
 new file mode 100644
-index 0000000..2636d03
+index 0000000..0ab845e
 --- /dev/null
 +++ b/src/server/sv_coop.cpp
-@@ -0,0 +1,1972 @@
+@@ -0,0 +1,2015 @@
 +// COOP: live replay streaming (spectator mode).
 +//
 +// The SP server records every nondeterministic input into sv.demo.msg (the replay system).
@@ -1674,6 +1674,7 @@ index 0000000..2636d03
 +    unsigned int magic;
 +    unsigned int passwordHash; // FNV-1a of coop_password (0 = none). A deterrent, not real security.
 +    int nameIndex;             // the callsign this guest picked (index into kCoopNames)
++    int query;                 // 1 = only asking which map the host is on (answered and closed, no player slot)
 +};
 +
 +static unsigned int Coop_PasswordHash(const char *pw)
@@ -1985,6 +1986,15 @@ index 0000000..2636d03
 +    if (got < (int)sizeof(hello) || hello.magic != COOP_HELLO_MAGIC || (want && hello.passwordHash != want))
 +    {
 +        Com_Printf(CON_CHANNEL_SERVER, "COOP-HOST: guest refused (%s)\n", got < (int)sizeof(hello) ? "no hello" : "wrong password");
++        closesocket(g);
++        return;
++    }
++    if (hello.query)
++    {
++        // a guest's launcher asking "which map are you on?" so it can load that map first instead of a placeholder
++        char answer[COOP_MAP_NAME] = {};
++        I_strncpyz(answer, Coop_Dvar("mapname"), sizeof(answer));
++        send(g, answer, sizeof(answer), 0);
 +        closesocket(g);
 +        return;
 +    }
@@ -2521,9 +2531,42 @@ index 0000000..2636d03
 +    u_long nb = 1;
 +    ioctlsocket(s_hostSock, FIONBIO, &nb);
 +    int myName = atoi(Coop_Dvar("coop_name"));
-+    CoopHello hello = { COOP_HELLO_MAGIC, Coop_PasswordHash(Coop_Dvar("coop_password")), (myName >= 0 && myName < COOP_NAME_COUNT) ? myName : 0 };
++    CoopHello hello = { COOP_HELLO_MAGIC, Coop_PasswordHash(Coop_Dvar("coop_password")), (myName >= 0 && myName < COOP_NAME_COUNT) ? myName : 0, 0 };
 +    send(s_hostSock, (const char *)&hello, sizeof(hello), 0);
 +    Com_Printf(CON_CHANNEL_SERVER, "COOP-GUEST: connected to %s\n", target);
++    return true;
++}
++
++// Called by the launcher before the game starts: ask a direct-IP host which map it is on, so the guest loads that
++// map first (not a placeholder). Returns false if the host cannot be reached or has no map; nothing is changed.
++bool Coop_PeekHostMap(const char *target, const char *password, char *mapOut, int mapSize)
++{
++    if (!target || !*target || strchr(target, '@'))
++        return false; // not for relay rooms
++    SOCKET sock;
++    if (!Coop_ConnectTcp(target, COOP_DEFAULT_PORT, 3000, &sock))
++        return false;
++    DWORD timeout = 3000;
++    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&timeout, sizeof(timeout));
++    CoopHello hello = { COOP_HELLO_MAGIC, Coop_PasswordHash(password ? password : ""), 0, 1 };
++    char answer[COOP_MAP_NAME] = {};
++    bool ok = Coop_SendAll(sock, &hello, sizeof(hello));
++    int got = 0;
++    while (ok && got < (int)sizeof(answer))
++    {
++        int n = recv(sock, answer + got, sizeof(answer) - got, 0);
++        if (n <= 0)
++            break;
++        got += n;
++    }
++    closesocket(sock);
++    answer[sizeof(answer) - 1] = 0;
++    if (!answer[0] || mapSize <= 0)
++        return false;
++    for (const char *c = answer; *c; ++c)
++        if (!isalnum((unsigned char)*c) && *c != '_')
++            return false;
++    I_strncpyz(mapOut, answer, mapSize);
 +    return true;
 +}
 +
@@ -4119,10 +4162,10 @@ index 0000000..0db1b32
 +}
 diff --git a/src/win32/win_coop_launcher.cpp b/src/win32/win_coop_launcher.cpp
 new file mode 100644
-index 0000000..dae917d
+index 0000000..49b42cd
 --- /dev/null
 +++ b/src/win32/win_coop_launcher.cpp
-@@ -0,0 +1,348 @@
+@@ -0,0 +1,355 @@
 +// COOP: pre-game launcher window. Shown by WinMain when the game is started without any command line
 +// (so a Steam shortcut / double click gets a menu, while scripts that pass options skip it).
 +// Plain Win32 controls only: works under Wine/gamescope and needs no resources or extra files.
@@ -4131,6 +4174,8 @@ index 0000000..dae917d
 +#include <stdio.h>
 +#include <string.h>
 +#include "../server/coop_names.h"
++
++bool Coop_PeekHostMap(const char *target, const char *password, char *mapOut, int mapSize); // sv_coop.cpp
 +
 +namespace
 +{
@@ -4280,8 +4325,13 @@ index 0000000..dae917d
 +    if (!strcmp(mode, "host"))
 +        _snprintf(g.cmd, sizeof(g.cmd), " +set coop_host 1%s +set coop_name %d +set coop_maxplayers %s +set coop_difficulty %d +set coop_enemies %d +set coop_horde %d +set coop_autostart 1 +set com_introPlayed 1 " kQuiet " +map %s", pw, nameSel, players, diffSel, enemiesSel + 1, kWaveCounts[wavesSel], map);
 +    else if (!strcmp(mode, "join") && addr[0])
-+        // the guest's own map is only a starting point: the host tells it which map to load
-+        _snprintf(g.cmd, sizeof(g.cmd), " +set coop_connect %s%s +set coop_name %d +set coop_autostart 1 +set com_introPlayed 1 " kQuiet " +map cargoship", addr, pw, nameSel);
++    {
++        // ask the host which map it is on and start there, so the guest does not load a placeholder first
++        char hostMap[64];
++        if (!Coop_PeekHostMap(addr, pass, hostMap, sizeof(hostMap)))
++            strcpy(hostMap, "cargoship"); // host not reachable yet / no answer: the old way (the host redirects us)
++        _snprintf(g.cmd, sizeof(g.cmd), " +set coop_connect %s%s +set coop_name %d +set coop_autostart 1 +set com_introPlayed 1 " kQuiet " +map %s", addr, pw, nameSel, hostMap);
++    }
 +    else if (!strcmp(mode, "hostonline") && relay[0])
 +        // through the relay: nothing listens on this machine; the game prints the room code to give your friends
 +        _snprintf(g.cmd, sizeof(g.cmd), " +set coop_host 1 +set coop_relay %s%s%s%s +set coop_name %d +set coop_maxplayers %s +set coop_difficulty %d +set coop_enemies %d +set coop_horde %d +set coop_autostart 1 +set com_introPlayed 1 " kQuiet " +map %s", relay, addr[0] ? " +set coop_roomname " : "", addr, pw, nameSel, players, diffSel, enemiesSel + 1, kWaveCounts[wavesSel], map);
