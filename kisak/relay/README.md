@@ -46,8 +46,10 @@ it (use a random room code, and set `coop_password` in the game so strangers are
 The practical rule stays: **only join hosts you trust, and only share room codes with people you trust.**
 
 ## Hosting it publicly
-- Run it as an unprivileged user, never root. The file `cudcampaign-relay.service` is a systemd unit with the
-  sandboxing options on (no new privileges, read-only filesystem, private /tmp, memory and task limits).
+- Easiest: `git clone <repo> /opt/cudcampaign && sudo /opt/cudcampaign/kisak/relay/install-relay.sh` creates an
+  unprivileged `cudrelay` user, installs a sandboxed systemd service pointing at the cloned `relay.py`, and opens the
+  port in the machine's firewall. Update with `git -C /opt/cudcampaign pull && sudo systemctl restart cudcampaign-relay`.
+  (`cudcampaign-relay.service` is the same unit as a sample for manual installs.)
 - Open only the relay port (default 28999/tcp) in the firewall. It needs no other inbound port and writes no files.
 - Put a connection limit in front of it as well if you can (your host's firewall / cloud security group): the
   per-address limits here protect against one visitor, not against a flood from thousands of addresses.

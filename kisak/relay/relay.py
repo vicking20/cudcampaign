@@ -215,7 +215,7 @@ async def handle_conn(reader, writer, ip):
                 release()
                 return await refuse(writer, "ERR bad hello")
             gid = secrets.token_hex(12)
-            fut = asyncio.get_event_loop().create_future()
+            fut = asyncio.get_running_loop().create_future()
             room.pending[gid] = fut
             try:
                 room.ctl.write(f"GUEST {gid}\n".encode()); await room.ctl.drain()
