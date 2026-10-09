@@ -1306,6 +1306,27 @@ index 3689235..1b5b1c0 100644
  
      __m128 outPos = PackXyzW(TransformPoint(bone, srcPos), srcPos);
      _mm_stream_ps((float *)dst, outPos);
+diff --git a/src/qcommon/com_playerprofile.cpp b/src/qcommon/com_playerprofile.cpp
+index ee3a6db..9bbcc1d 100644
+--- a/src/qcommon/com_playerprofile.cpp
++++ b/src/qcommon/com_playerprofile.cpp
+@@ -187,7 +187,15 @@ void __cdecl Com_InitPlayerProfiles(int localClientNum)
+     Dvar_ChangeResetValue((dvar_t*)ui_playerProfileAlreadyChosen, 1);
+     com_playerProfile = Dvar_RegisterString("com_playerProfile", (char *)"", DVAR_ROM, "Player profile");
+     if (!Com_SetInitialPlayerProfile(localClientNum))
+-        Com_ExecStartupConfigs(localClientNum, 0);
++    {
++        // COOP: a fresh install has no profile and the launcher skips the menu that makes one, so every save path
++        // failed with "Tried to use a player profile before it was set". Make (or reuse) a default profile.
++        static char defaultProfile[] = "Player";
++        if (Com_IsValidPlayerProfileDir(defaultProfile) || Com_NewPlayerProfile(defaultProfile))
++            Com_SetPlayerProfile(localClientNum, defaultProfile);
++        else
++            Com_ExecStartupConfigs(localClientNum, 0);
++    }
+ }
+ 
+ char __cdecl Com_NewPlayerProfile(const char *profileName)
 diff --git a/src/script/scr_yacc_structs.h b/src/script/scr_yacc_structs.h
 index 173d6f4..ce23fe5 100644
 --- a/src/script/scr_yacc_structs.h
@@ -4068,10 +4089,10 @@ index 0000000..0db1b32
 +}
 diff --git a/src/win32/win_coop_launcher.cpp b/src/win32/win_coop_launcher.cpp
 new file mode 100644
-index 0000000..51ebf95
+index 0000000..dae917d
 --- /dev/null
 +++ b/src/win32/win_coop_launcher.cpp
-@@ -0,0 +1,352 @@
+@@ -0,0 +1,348 @@
 +// COOP: pre-game launcher window. Shown by WinMain when the game is started without any command line
 +// (so a Steam shortcut / double click gets a menu, while scripts that pass options skip it).
 +// Plain Win32 controls only: works under Wine/gamescope and needs no resources or extra files.
@@ -4122,14 +4143,16 @@ index 0000000..51ebf95
 +
 +enum { ID_SINGLE = 101, ID_HOST, ID_JOIN, ID_HOSTONLINE, ID_JOINONLINE,   // the five modes (radio group)
 +       ID_MAP, ID_ADDR, ID_RELAY, ID_PASS, ID_PLAYERS, ID_NAME, ID_DIFF, ID_ENEMIES, ID_WAVES, ID_START, ID_QUIT };
-+const int kH = 710, kTop = 40, kShift = 48; // window height; title line; the two extra radio buttons push everything down
++const int kW = 800, kH = 470, kTop = 52; // wide window: mode + mission on the left, settings on the right; kTop = title band
++const COLORREF kBg = RGB(28, 31, 26), kFg = RGB(222, 224, 208);
 +
 +struct State
 +{
 +    bool done, start;
 +    HWND single, host, join, hostOnline, joinOnline, map, addr, addrLabel, relayBox, pass, mapLabel, note, win, players, nameBox, diffBox, enemiesBox, wavesBox;
-+    HWND lower[20];   // controls under the mission list (they move up when the list is hidden)
-+    int lowerY[20], lowerGroup[20], lowerCount; // group 1 = host-only rows (hidden for guests), 2 = below them (move up)
++    HWND lower[20];   // the settings column
++    int lowerGroup[20], lowerCount; // group 1 = host-only rows (hidden for guests)
++    HBRUSH bg;
 +    char cmd[512];
 +};
 +State g;
@@ -4163,24 +4186,6 @@ index 0000000..51ebf95
 +    ShowWindow(g.map, hosting ? SW_SHOW : SW_HIDE);
 +    ShowWindow(g.mapLabel, hosting ? SW_SHOW : SW_HIDE);
 +    ShowWindow(g.note, hosting ? SW_HIDE : SW_SHOW);
-+    {
-+        // close the gap left by the hidden mission list (150 tall) and, for a guest, the host-only rows
-+        int dy = hosting ? 0 : -100;
-+        for (int i = 0; i < g.lowerCount; i++)
-+        {
-+            RECT r;
-+            GetWindowRect(g.lower[i], &r);
-+            POINT pt = { r.left, r.top };
-+            ScreenToClient(g.win, &pt);
-+            int extra = (!hosting && g.lowerGroup[i] == 2) ? -90 : 0;
-+            SetWindowPos(g.lower[i], NULL, pt.x, g.lowerY[i] + dy + extra, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
-+        }
-+        RECT wr;
-+        GetWindowRect(g.win, &wr);
-+        int h = kH + dy + (hosting ? 0 : -90 + 12); // a little room under the buttons
-+        if (wr.bottom - wr.top != h)
-+            SetWindowPos(g.win, NULL, 0, 0, wr.right - wr.left, h, SWP_NOMOVE | SWP_NOZORDER);
-+    }
 +    SetWindowTextA(g.note, joinOnline ? "Enter the room name/code the host gave you and the relay address. You will be taken to the host's mission."
 +                         : join ? "You will be taken to whatever mission the host is playing, wherever they are in it."
 +                                : "Single player opens the normal main menu.");
@@ -4253,7 +4258,7 @@ index 0000000..51ebf95
 +    else if (!strcmp(mode, "joinonline") && relay[0] && addr[0])
 +        _snprintf(g.cmd, sizeof(g.cmd), " +set coop_connect %s@%s%s +set coop_name %d +set coop_autostart 1 +set com_introPlayed 1 " kQuiet " +map cargoship", addr, relay, pw, nameSel);
 +    else
-+        g.cmd[0] = 0; // single player: the normal main menu
++        _snprintf(g.cmd, sizeof(g.cmd), " " kQuiet); // single player: the normal main menu (debug overlays still off)
 +    g.cmd[sizeof(g.cmd) - 1] = 0;
 +    g.start = true;
 +    g.done = true;
@@ -4280,13 +4285,24 @@ index 0000000..51ebf95
 +        }
 +        break;
 +    case WM_CLOSE: g.done = true; return 0;
++    case WM_CTLCOLORSTATIC: case WM_CTLCOLORBTN:
++        SetTextColor((HDC)w, kFg);
++        SetBkColor((HDC)w, kBg);
++        return (LRESULT)g.bg;
++    case WM_ERASEBKGND:
++    {
++        RECT r;
++        GetClientRect(h, &r);
++        FillRect((HDC)w, &r, g.bg);
++        return 1;
++    }
 +    }
 +    return DefWindowProcA(h, m, w, l);
 +}
 +
 +HWND Add(HWND parent, const char *cls, const char *text, DWORD style, int x, int y, int w, int h, int id, HFONT font)
 +{
-+    HWND c = CreateWindowExA(0, cls, text, WS_CHILD | WS_VISIBLE | style, x, y + kTop + (y >= 130 && (id == 0 || id >= ID_MAP) ? kShift : 0), w, h, parent, (HMENU)(INT_PTR)id, GetModuleHandleA(NULL), NULL);
++    HWND c = CreateWindowExA(0, cls, text, WS_CHILD | WS_VISIBLE | style, x, y + kTop, w, h, parent, (HMENU)(INT_PTR)id, GetModuleHandleA(NULL), NULL);
 +    SendMessageA(c, WM_SETFONT, (WPARAM)font, TRUE);
 +    return c;
 +}
@@ -4299,11 +4315,12 @@ index 0000000..51ebf95
 +    wc.lpfnWndProc = LauncherProc;
 +    wc.hInstance = GetModuleHandleA(NULL);
 +    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
-+    wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
++    wc.hbrBackground = NULL; // painted in WM_ERASEBKGND
 +    wc.lpszClassName = "KisakCoopLauncher";
 +    RegisterClassA(&wc);
 +
-+    int W = 420, H = kH;
++    g.bg = CreateSolidBrush(kBg);
++    int W = kW, H = kH;
 +    int sx = (GetSystemMetrics(SM_CXSCREEN) - W) / 2, sy = (GetSystemMetrics(SM_CYSCREEN) - H) / 2;
 +    // borderless window (no title bar): the title line below stands in for it
 +    HWND win = CreateWindowExA(WS_EX_TOPMOST, wc.lpszClassName, "CudCampaign",
@@ -4323,18 +4340,18 @@ index 0000000..51ebf95
 +    savedPlayers = GetPrivateProfileIntA("launcher", "players", 4, ini);
 +
 +    {
-+        HWND t = CreateWindowExA(0, "STATIC", "CUDCAMPAIGN", WS_CHILD | WS_VISIBLE | SS_CENTER, 0, 8, W - 6, 28, win, NULL, wc.hInstance, NULL);
++        HWND t = CreateWindowExA(0, "STATIC", "CUDCAMPAIGN", WS_CHILD | WS_VISIBLE | SS_CENTER, 0, 10, W - 6, 30, win, NULL, wc.hInstance, NULL);
 +        SendMessageA(t, WM_SETFONT, (WPARAM)titleFont, TRUE);
 +    }
-+    Add(win, "STATIC", "Start the host first; guests join whatever the host is playing.", 0, 16, 4, 380, 20, 0, font);
-+    g.single = Add(win, "BUTTON", "Single player (main menu)", BS_AUTORADIOBUTTON | WS_GROUP, 16, 50, 380, 20, ID_SINGLE, font);
-+    g.host = Add(win, "BUTTON", "Host a co-op game (LAN / direct IP)", BS_AUTORADIOBUTTON, 16, 74, 380, 20, ID_HOST, font);
-+    g.join = Add(win, "BUTTON", "Join a co-op game (IP address)", BS_AUTORADIOBUTTON, 16, 98, 380, 20, ID_JOIN, font);
-+    g.hostOnline = Add(win, "BUTTON", "Host online (through a relay, room code)", BS_AUTORADIOBUTTON, 16, 122, 380, 20, ID_HOSTONLINE, font);
-+    g.joinOnline = Add(win, "BUTTON", "Join online (room code)", BS_AUTORADIOBUTTON, 16, 146, 380, 20, ID_JOINONLINE, font);
-+    g.mapLabel = Add(win, "STATIC", "Mission:", 0, 16, 130, 200, 18, 0, font);
-+    g.note = Add(win, "STATIC", "", 0, 16, 150, 384, 60, 0, font);
-+    g.map = Add(win, "LISTBOX", "", WS_BORDER | WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT, 16, 150, 384, 150, ID_MAP, font);
++    Add(win, "STATIC", "Start the host first; guests join whatever the host is playing.", SS_CENTER, 0, -8, W - 6, 18, 0, font);
++    g.single = Add(win, "BUTTON", "Single player (main menu)", BS_AUTORADIOBUTTON | WS_GROUP, 20, 14, 360, 22, ID_SINGLE, font);
++    g.host = Add(win, "BUTTON", "Host a co-op game (LAN / direct IP)", BS_AUTORADIOBUTTON, 20, 40, 360, 22, ID_HOST, font);
++    g.join = Add(win, "BUTTON", "Join a co-op game (IP address)", BS_AUTORADIOBUTTON, 20, 66, 360, 22, ID_JOIN, font);
++    g.hostOnline = Add(win, "BUTTON", "Host online (through a relay, room code)", BS_AUTORADIOBUTTON, 20, 92, 360, 22, ID_HOSTONLINE, font);
++    g.joinOnline = Add(win, "BUTTON", "Join online (room code)", BS_AUTORADIOBUTTON, 20, 118, 360, 22, ID_JOINONLINE, font);
++    g.mapLabel = Add(win, "STATIC", "Mission:", 0, 20, 156, 200, 18, 0, font);
++    g.note = Add(win, "STATIC", "", 0, 20, 180, 360, 80, 0, font);
++    g.map = Add(win, "LISTBOX", "", WS_BORDER | WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT, 20, 180, 360, 220, ID_MAP, font);
 +    int selIdx = -1;
 +    for (int i = 0; i < kMissionCount; i++)
 +    {
@@ -4350,25 +4367,25 @@ index 0000000..51ebf95
 +    }
 +    SendMessageA(g.map, LB_SETCURSEL, selIdx >= 0 ? selIdx : 3, 0);
 +    struct { const char *cls, *text; DWORD style; int x, y, w, h, id; HWND *out; int group; } lowerDefs[] = {
-+        { "STATIC", "Host address:", 0, 16, 318, 90, 18, 0, &g.addrLabel, 0 },
-+        { "EDIT", addr, WS_BORDER | ES_AUTOHSCROLL, 110, 314, 200, 22, ID_ADDR, &g.addr, 0 },
-+        { "STATIC", "Relay:", 0, 16, 348, 90, 18, 0, 0, 0 },
-+        { "EDIT", relay, WS_BORDER | ES_AUTOHSCROLL, 110, 344, 200, 22, ID_RELAY, &g.relayBox, 0 },
-+        { "STATIC", "Password:", 0, 16, 378, 90, 18, 0, 0, 0 },
-+        { "EDIT", pass, WS_BORDER | ES_AUTOHSCROLL, 110, 374, 200, 22, ID_PASS, &g.pass, 0 },
-+        { "STATIC", "Your name:", 0, 16, 408, 90, 18, 0, 0, 0 },
-+        { "COMBOBOX", "", CBS_DROPDOWNLIST | WS_VSCROLL, 110, 404, 130, 160, ID_NAME, &g.nameBox, 0 },
-+        { "STATIC", "Players:", 0, 16, 438, 90, 18, 0, 0, 1 },
-+        { "COMBOBOX", "", CBS_DROPDOWNLIST | WS_VSCROLL, 110, 434, 70, 120, ID_PLAYERS, &g.players, 1 },
-+        { "STATIC", "Difficulty:", 0, 16, 468, 90, 18, 0, 0, 1 },
-+        { "COMBOBOX", "", CBS_DROPDOWNLIST | WS_VSCROLL, 110, 464, 130, 120, ID_DIFF, &g.diffBox, 1 },
-+        { "STATIC", "Enemies:", 0, 16, 498, 90, 18, 0, 0, 1 },
-+        { "COMBOBOX", "", CBS_DROPDOWNLIST | WS_VSCROLL, 110, 494, 130, 120, ID_ENEMIES, &g.enemiesBox, 1 },
-+        { "STATIC", "Horde waves:", 0, 16, 528, 90, 18, 0, 0, 1 },
-+        { "COMBOBOX", "", CBS_DROPDOWNLIST | WS_VSCROLL, 110, 524, 130, 120, ID_WAVES, &g.wavesBox, 1 },
-+        { "STATIC", "Leave the password empty for an open game.", 0, 16, 558, 384, 18, 0, 0, 2 },
-+        { "BUTTON", "Start", BS_DEFPUSHBUTTON, 110, 582, 90, 28, ID_START, 0, 2 },
-+        { "BUTTON", "Quit", 0, 220, 582, 90, 28, ID_QUIT, 0, 2 },
++        { "STATIC", "Host address:", 0, 420, 18, 110, 18, 0, &g.addrLabel, 0 },
++        { "EDIT", addr, WS_BORDER | ES_AUTOHSCROLL, 540, 14, 230, 24, ID_ADDR, &g.addr, 0 },
++        { "STATIC", "Relay:", 0, 420, 54, 110, 18, 0, 0, 0 },
++        { "EDIT", relay, WS_BORDER | ES_AUTOHSCROLL, 540, 50, 230, 24, ID_RELAY, &g.relayBox, 0 },
++        { "STATIC", "Password:", 0, 420, 90, 110, 18, 0, 0, 0 },
++        { "EDIT", pass, WS_BORDER | ES_AUTOHSCROLL, 540, 86, 230, 24, ID_PASS, &g.pass, 0 },
++        { "STATIC", "Your name:", 0, 420, 126, 110, 18, 0, 0, 0 },
++        { "COMBOBOX", "", CBS_DROPDOWNLIST | WS_VSCROLL, 540, 122, 160, 160, ID_NAME, &g.nameBox, 0 },
++        { "STATIC", "Players:", 0, 420, 162, 110, 18, 0, 0, 1 },
++        { "COMBOBOX", "", CBS_DROPDOWNLIST | WS_VSCROLL, 540, 158, 80, 120, ID_PLAYERS, &g.players, 1 },
++        { "STATIC", "Difficulty:", 0, 420, 198, 110, 18, 0, 0, 1 },
++        { "COMBOBOX", "", CBS_DROPDOWNLIST | WS_VSCROLL, 540, 194, 160, 120, ID_DIFF, &g.diffBox, 1 },
++        { "STATIC", "Enemies:", 0, 420, 234, 110, 18, 0, 0, 1 },
++        { "COMBOBOX", "", CBS_DROPDOWNLIST | WS_VSCROLL, 540, 230, 160, 120, ID_ENEMIES, &g.enemiesBox, 1 },
++        { "STATIC", "Horde waves:", 0, 420, 270, 110, 18, 0, 0, 1 },
++        { "COMBOBOX", "", CBS_DROPDOWNLIST | WS_VSCROLL, 540, 266, 160, 120, ID_WAVES, &g.wavesBox, 1 },
++        { "STATIC", "Leave the password empty for an open game.", 0, 420, 312, 350, 18, 0, 0, 2 },
++        { "BUTTON", "Start", BS_DEFPUSHBUTTON, 540, 352, 110, 34, ID_START, 0, 2 },
++        { "BUTTON", "Quit", 0, 660, 352, 110, 34, ID_QUIT, 0, 2 },
 +    };
 +    g.lowerCount = 0;
 +    for (auto &d : lowerDefs)
@@ -4378,7 +4395,7 @@ index 0000000..51ebf95
 +            *d.out = c;
 +        g.lower[g.lowerCount] = c;
 +        g.lowerGroup[g.lowerCount] = d.group;
-+        g.lowerY[g.lowerCount++] = d.y + kTop + kShift;
++        g.lowerCount++;
 +    }
 +
 +    for (int i = 0; i < COOP_NAME_COUNT; i++)
@@ -4425,10 +4442,10 @@ index 0000000..51ebf95
 +    return true;
 +}
 diff --git a/src/win32/win_main.cpp b/src/win32/win_main.cpp
-index 471b763..81eac27 100644
+index 471b763..f157162 100644
 --- a/src/win32/win_main.cpp
 +++ b/src/win32/win_main.cpp
-@@ -756,8 +756,14 @@ WinMain
+@@ -756,10 +756,17 @@ WinMain
  # BURN, BABY, BURN -- MASTER IGNITION ROUTINE
  ==================
  */
@@ -4442,8 +4459,19 @@ index 471b763..81eac27 100644
 +
  	// KISAK: make a pretty console in debug mode, redirect in/out/err stream
  #if 1 || defined(KISAK_DEBUG)
++	if (lpCmdLine && strstr(lpCmdLine, "-console")) { // COOP: no console window unless asked for (-console)
  	AllocConsole();
-@@ -798,6 +804,16 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
+ 
+ 	SetConsoleTitleA("KisakCOD");
+@@ -775,6 +782,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
+ 	freopen("CONIN$", "r", stdin);
+ 	freopen("CONOUT$", "w", stdout);
+ 	freopen("CONOUT$", "w", stderr);
++	}
+ #endif
+ 
+ 	Sys_InitializeCriticalSections();
+@@ -798,6 +806,16 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
  			Sys_FindInfo();
  			g_wv.hInstance = hInstance;
  			I_strncpyz(sys_cmdline, lpCmdLine, 1024);

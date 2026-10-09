@@ -56,7 +56,7 @@ Start the host first and click through its briefing. `BIND=local ./host.sh` list
 Started with no command line (double click, Steam shortcut), `KisakCOD-sp.exe` shows a small window:
 Single player / Host / Join, mission, host address. It appends the matching `+set coop_host` /
 `+set coop_connect` / `+map` options and remembers the choices in `coop_launcher.ini` next to the exe.
-Any command line at all skips it (the launch scripts do). Source: `src/win32/win_coop_launcher.cpp`.
+Any command line at all skips it (the launch scripts do). No console window opens unless you start the exe with `-console`. Source: `src/win32/win_coop_launcher.cpp`.
 
 ## Launcher, password, joining (2026-10-08)
 - Launcher: missions are listed in campaign order (act headings). **Host** picks the mission; **Join** hides
