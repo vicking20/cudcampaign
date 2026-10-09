@@ -2097,10 +2097,10 @@ index a2d77d7..2ad446c 100644
      SV_InitReliableCommandsForClient(clients);
 diff --git a/src/server/sv_coop.cpp b/src/server/sv_coop.cpp
 new file mode 100644
-index 0000000..e1475a1
+index 0000000..5cbad83
 --- /dev/null
 +++ b/src/server/sv_coop.cpp
-@@ -0,0 +1,2245 @@
+@@ -0,0 +1,2254 @@
 +// COOP: live replay streaming (spectator mode).
 +//
 +// The SP server records every nondeterministic input into sv.demo.msg (the replay system).
@@ -3216,6 +3216,15 @@ index 0000000..e1475a1
 +    CoopHello hello = { COOP_HELLO_MAGIC, Coop_PasswordHash(Coop_Dvar("coop_password")), (myName >= 0 && myName < COOP_NAME_COUNT) ? myName : 0, 0 };
 +    send(s_hostSock, (const char *)&hello, sizeof(hello), 0);
 +    Com_Printf(CON_CHANNEL_SERVER, "COOP-GUEST: connected to %s\n", target);
++    {
++        // the guest shows its own movement at once and then corrects to the host's result; over the internet that
++        // correction arrives later and more often, and the engine's default 100 ms blend felt like a step back.
++        // Blend it over longer: +set coop_smoothing <ms> (default 300, 0 = engine default)
++        const char *sm = Coop_Dvar("coop_smoothing");
++        int ms = *sm ? atoi(sm) : 300;
++        if (ms > 0)
++            Dvar_SetFromStringByName("cg_errordecay", va("%d", ms > 2000 ? 2000 : ms));
++    }
 +    return true;
 +}
 +
