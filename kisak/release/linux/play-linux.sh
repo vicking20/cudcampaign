@@ -16,4 +16,11 @@ fi
 export WINEPREFIX="${WINEPREFIX:-$HOME/.local/share/cudcampaign-wine}"
 export WINEDLLOVERRIDES="d3d9=n,b;winemenubuilder.exe=d"
 export WINEDEBUG="${WINEDEBUG:--all}"
+# CUD_DESKTOP=1 ./play-linux.sh runs the game inside a Wine virtual desktop (one window holds everything Wine opens).
+# Use it if the game loses focus by itself (seen on KDE/Wayland: a Wine helper popup takes the focus and the game
+# shows its objectives screen with dead mouse/keyboard). Size: CUD_DESKTOP_SIZE=1920x1080 (default: the screen).
+if [ -n "$CUD_DESKTOP" ]; then
+  SIZE="${CUD_DESKTOP_SIZE:-$(xrandr 2>/dev/null | awk '/\*/{print $1; exit}')}"
+  exec "$WINE" explorer "/desktop=CudCampaign,${SIZE:-1920x1080}" KisakCOD-sp.exe "$@"
+fi
 exec "$WINE" KisakCOD-sp.exe "$@"

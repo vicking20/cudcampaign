@@ -2057,10 +2057,10 @@ index a2d77d7..2ad446c 100644
      SV_InitReliableCommandsForClient(clients);
 diff --git a/src/server/sv_coop.cpp b/src/server/sv_coop.cpp
 new file mode 100644
-index 0000000..7128f59
+index 0000000..e1475a1
 --- /dev/null
 +++ b/src/server/sv_coop.cpp
-@@ -0,0 +1,2191 @@
+@@ -0,0 +1,2245 @@
 +// COOP: live replay streaming (spectator mode).
 +//
 +// The SP server records every nondeterministic input into sv.demo.msg (the replay system).
@@ -2105,7 +2105,8 @@ index 0000000..7128f59
 +#define COOP_MAX_LAG_MS 250    // guest fast-forwards when further behind than this
 +#define COOP_TARGET_LAG_MS 100 // ...down to this (must stay > 2 frames)
 +#define COOP_MAP_NAME 64
-+#define COOP_RESET_PREFIX (COOP_MAP_NAME + 28) // reset payload = map name, this guest's player slot (int), kind (int), the host's callsign (int), the game's player count, enemy multiplier, horde waves and difficulty (ints), then:
++#define COOP_SYNC_DVARS 512 // "name\tvalue\n" lines of the host's simulation settings (see kCoopSyncDvars)
++#define COOP_RESET_PREFIX (COOP_MAP_NAME + 28 + COOP_SYNC_DVARS) // reset payload = map name, this guest's player slot (int), kind (int), the host's callsign (int), the game's player count, enemy multiplier, horde waves and difficulty (ints), then:
 +#define COOP_RESET_START 0    // kind 0: the savegame the host's recording started from (replay from the start)
 +#define COOP_RESET_SNAPSHOT 1 // kind 1: a CoopSnapHeader + three blobs: the game as it is now (late join)
 +
@@ -2352,10 +2353,62 @@ index 0000000..7128f59
 +// checkpoint or changes level)
 +// the host's choices that change what the simulation does (how many enemies spawn, horde, difficulty): every
 +// machine must run the level with the same values or the games drift apart (entity numbers differ, saves stop fitting)
++// profile settings that change what the mission does (how many corpses stay, which cheats/arcade rules run, the
++// low-spec AI variants of some maps): a guest whose profile differs runs a different simulation and the host's saves
++// stop fitting ("Trying to read corrupted file"). Only these names are ever accepted from a host.
++static const char *const kCoopSyncDvars[] = {
++    "ai_corpseCount", "min_spec_ai", "animated_trees_enabled", "ragdoll_enable", "disable_tank_shock_minspec",
++    "airlift_min_spec", "bog_b_min_spec", "cheat_items_set1", "cheat_items_set2", "cheat_points",
++    "arcademode", "arcademode_full", "arcademode_lives",
++};
++
 +static void Coop_WriteHostSettings(unsigned char *payload)
 +{
 +    int v[4] = { G_CoopReservedSlots(), atoi(Coop_Dvar("coop_enemies")), atoi(Coop_Dvar("coop_horde")), atoi(Coop_Dvar("g_gameskill")) };
 +    memcpy(payload + COOP_MAP_NAME + 12, v, sizeof(v));
++    char *out = (char *)payload + COOP_MAP_NAME + 28;
++    int used = 0;
++    for (const char *name : kCoopSyncDvars)
++    {
++        const dvar_s *d = Dvar_FindVar(name);
++        if (!d)
++            continue;
++        int n = _snprintf(out + used, COOP_SYNC_DVARS - 1 - used, "%s\t%s\n", name, Dvar_DisplayableValue(d));
++        if (n < 0 || used + n >= COOP_SYNC_DVARS - 1)
++            break;
++        used += n;
++    }
++    out[used] = 0;
++}
++
++// guest: apply the host's simulation settings (only names on the list, plain values)
++static void Coop_ApplyHostDvars(const unsigned char *block)
++{
++    char buf[COOP_SYNC_DVARS];
++    memcpy(buf, block, sizeof(buf));
++    buf[sizeof(buf) - 1] = 0;
++    for (char *line = buf; line && *line;)
++    {
++        char *next = strchr(line, '\n');
++        if (next)
++            *next++ = 0;
++        char *tab = strchr(line, '\t');
++        if (tab)
++        {
++            *tab = 0;
++            const char *value = tab + 1;
++            bool listed = false;
++            for (const char *name : kCoopSyncDvars)
++                if (!strcmp(name, line))
++                    listed = true;
++            bool plain = strlen(value) < 64;
++            for (const char *c = value; *c && plain; ++c)
++                plain = (*c >= 32 && *c < 127 && *c != '"' && *c != ';' && *c != '\\');
++            if (listed && plain && Dvar_FindVar(line))
++                Dvar_SetFromStringByName(line, value);
++        }
++        line = next;
++    }
 +}
 +
 +static bool Coop_SendResetToGuest(CoopGuestConn &c)
@@ -3279,6 +3332,7 @@ index 0000000..7128f59
 +        Dvar_SetIntByName("coop_horde", horde);
 +        if (skill >= 0 && skill <= 3)
 +            Dvar_SetIntByName("coop_difficulty", skill); // the level starts at the host's difficulty
++        Coop_ApplyHostDvars(s_resetSave + COOP_MAP_NAME + 28);
 +    }
 +    if (s_mySlot < 1 || s_mySlot >= COOP_MAX_CLIENTS)
 +        s_mySlot = 1;
@@ -4839,10 +4893,10 @@ index 0000000..0db1b32
 +}
 diff --git a/src/win32/win_coop_launcher.cpp b/src/win32/win_coop_launcher.cpp
 new file mode 100644
-index 0000000..ec65b12
+index 0000000..ebd0dab
 --- /dev/null
 +++ b/src/win32/win_coop_launcher.cpp
-@@ -0,0 +1,363 @@
+@@ -0,0 +1,364 @@
 +// COOP: pre-game launcher window. Shown by WinMain when the game is started without any command line
 +// (so a Steam shortcut / double click gets a menu, while scripts that pass options skip it).
 +// Plain Win32 controls only: works under Wine/gamescope and needs no resources or extra files.
@@ -5020,6 +5074,7 @@ index 0000000..ec65b12
 +        _snprintf(g.cmd, sizeof(g.cmd), " " kQuiet); // single player: the normal main menu (debug overlays still off)
 +    g.cmd[sizeof(g.cmd) - 1] = 0;
 +    strncat(g.cmd, Checked(g.fullscreen) ? " +set r_fullscreen 1" : " +set r_fullscreen 0", sizeof(g.cmd) - strlen(g.cmd) - 1);
++    strncat(g.cmd, " +set logfile 2", sizeof(g.cmd) - strlen(g.cmd) - 1); // console.log written line by line: a freeze or crash still leaves the whole log for bug reports
 +    g.start = true;
 +    g.done = true;
 +}
