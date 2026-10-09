@@ -2114,10 +2114,10 @@ index a2d77d7..2ad446c 100644
      SV_InitReliableCommandsForClient(clients);
 diff --git a/src/server/sv_coop.cpp b/src/server/sv_coop.cpp
 new file mode 100644
-index 0000000..c7ea6eb
+index 0000000..276c8b8
 --- /dev/null
 +++ b/src/server/sv_coop.cpp
-@@ -0,0 +1,2286 @@
+@@ -0,0 +1,2290 @@
 +// COOP: live replay streaming (spectator mode).
 +//
 +// The SP server records every nondeterministic input into sv.demo.msg (the replay system).
@@ -2159,15 +2159,17 @@ index 0000000..c7ea6eb
 +#define COOP_DEFAULT_PORT 28970
 +#define COOP_MAGIC 0x504F4F43 // 'COOP'
 +#define COOP_MAX_PIECE (16 * 1024)
-+// the guest plays a little behind the host so late packets (internet, relay) are absorbed instead of stalling a frame:
-+// +set coop_buffer <ms> (default 150). It fast-forwards only when much further behind than that.
++// Pacing of a guest behind the host. When a host frame is late (internet, relay) the guest waits for it, and afterwards
++// drops the waited time instead of sprinting to catch up (a sprint is a visible jump and puts it right back at the edge):
++// each late packet moves the guest's timeline slightly later, so it builds up slack and later jitter no longer shows.
++// Only when it is a whole second behind does it fast-forward, back to +set coop_buffer <ms> behind (default 150).
 +static int Coop_BufferMs()
 +{
 +    const dvar_s *d = Dvar_FindVar("coop_buffer");
 +    int ms = d && *Dvar_DisplayableValue(d) ? atoi(Dvar_DisplayableValue(d)) : 150;
 +    return ms < 0 ? 0 : ms > 1000 ? 1000 : ms;
 +}
-+#define COOP_MAX_LAG_MS (Coop_BufferMs() + 250)   // guest fast-forwards when further behind than this
++#define COOP_MAX_LAG_MS (Coop_BufferMs() + 1000)  // guest fast-forwards when further behind than this
 +#define COOP_TARGET_LAG_MS (Coop_BufferMs() + 100) // ...down to this (must stay > 2 frames)
 +#define COOP_MAP_NAME 64
 +#define COOP_SYNC_DVARS 512 // "name\tvalue\n" lines of the host's simulation settings (see kCoopSyncDvars)
@@ -3548,7 +3550,7 @@ index 0000000..c7ea6eb
 +    }
 +
 +    // frame N = framePos+1 reads ahead into frame N+1, so the host must have finished N+1
-+    int need = G_GetFramePos() + 2 + Coop_BufferMs() / 50; // a few frames of buffer against network jitter
++    int need = G_GetFramePos() + 2;
 +    int start = Sys_Milliseconds();
 +    while (s_hostFrameDone < need)
 +    {
@@ -3565,6 +3567,7 @@ index 0000000..c7ea6eb
 +            Com_Printf(CON_CHANNEL_SERVER, "COOP-GUEST: waiting on host (have frame %d, need %d)\n", s_hostFrameDone, need);
 +            start = Sys_Milliseconds();
 +        }
++        sv.clearTimeResidual = 1; // we waited: shift our timeline instead of sprinting through the waited time later
 +        Sleep(1);
 +    }
 +}
@@ -4382,6 +4385,7 @@ index 0000000..c7ea6eb
 +            Coop_GuestFail("the host stopped sending");
 +            return;
 +        }
++        sv.clearTimeResidual = 1; // as above: no catch-up sprint after waiting
 +        Sleep(1);
 +    }
 +}
