@@ -10,7 +10,11 @@ Features: join mid-mission, respawn beside a living partner, mission changes, vi
 host-chosen difficulty and enemy count, a wave ("horde") mode on any map, controller support, and a launcher window
 built into the exe.
 
-> Early test build. Only join hosts you trust and share room codes only with people you trust: see [SECURITY.md](SECURITY.md).
+> **Early test build, expect bugs.** Joining a game that is already in progress, pausing, and the host changing video
+> settings can still desync or disconnect a guest, especially over the internet. LAN play is the most reliable. Please
+> report problems with the guest's `main/console.log`.
+>
+> Only join hosts you trust and share room codes only with people you trust: see [SECURITY.md](SECURITY.md).
 
 ## Install (players)
 1. Go to the [releases page](https://github.com/vicking20/cudcampaign/releases), download the zip from the newest
