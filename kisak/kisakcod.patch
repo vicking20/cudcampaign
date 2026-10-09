@@ -1788,6 +1788,24 @@ index ee3a6db..9bbcc1d 100644
  }
  
  char __cdecl Com_NewPlayerProfile(const char *profileName)
+diff --git a/src/ragdoll/ragdoll.cpp b/src/ragdoll/ragdoll.cpp
+index 915a195..3c27182 100644
+--- a/src/ragdoll/ragdoll.cpp
++++ b/src/ragdoll/ragdoll.cpp
+@@ -313,7 +313,13 @@ void __cdecl Ragdoll_Remove(int ragdoll)
+ {
+     RagdollBody *body; // [esp+0h] [ebp-4h]
+ 
++    // COOP: a stale or garbage handle (seen once on a guest during a level start) used to read outside the body
++    // table and crash the game. Handles are 1..32; anything else, or a body that is not in use, is ignored.
++    if ((uint32_t)(ragdoll - 1) >= 0x20)
++        return;
+     body = Ragdoll_HandleBody(ragdoll);
++    if (!Ragdoll_BodyInUse(body))
++        return;
+     iassert( body );
+     iassert( Ragdoll_BodyInUse( body ) );
+     if (body->references == 1)
 diff --git a/src/script/scr_yacc_structs.h b/src/script/scr_yacc_structs.h
 index 173d6f4..ce23fe5 100644
 --- a/src/script/scr_yacc_structs.h
