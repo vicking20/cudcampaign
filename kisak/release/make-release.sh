@@ -37,5 +37,8 @@ ZIP="$OUT/CudCampaign-$VERSION.zip"
 rm -f "$ZIP"
 (cd "$STAGE" && python3 -c "import shutil,sys; shutil.make_archive(sys.argv[1][:-4], 'zip', '.', 'coop')" "$ZIP")
 rm -rf "$STAGE"
-echo "Built $ZIP"
+# fixed-name copy: attach THIS one to each GitHub release so .../releases/latest/download/CudCampaign.zip never changes
+cp "$ZIP" "$OUT/CudCampaign.zip"
+(cd "$OUT" && sha256sum "CudCampaign.zip" > SHA256SUMS)
+echo "Built $ZIP  (+ $OUT/CudCampaign.zip and SHA256SUMS to attach to the release)"
 python3 -m zipfile -l "$ZIP" | head -40

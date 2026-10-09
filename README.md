@@ -13,7 +13,9 @@ built into the exe.
 > Early test build. Only join hosts you trust and share room codes only with people you trust: see [SECURITY.md](SECURITY.md).
 
 ## Install (players)
-1. Download the release zip and unpack it **inside your game folder**, so `coop/` sits next to `main/` and `zone/`.
+1. Download [CudCampaign.zip](https://github.com/vicking20/cudmw/releases/latest/download/CudCampaign.zip) (always the
+   newest; all versions are on the [releases page](https://github.com/vicking20/cudmw/releases)) and unpack it **inside
+   your game folder**, so `coop/` sits next to `main/` and `zone/`. Checksums are in `SHA256SUMS` on the release.
 2. Run `coop/install.ps1` (Windows: right click, Run with PowerShell) or `coop/install.sh` (Linux). It downloads the
    few third-party runtime files the exe needs (list and checksums in `deps.txt`).
 3. Run `coop/KisakCOD-sp.exe` (Windows), or `coop/play-linux.sh` (Linux/Steam Deck; needs Wine, DXVK is bundled).
