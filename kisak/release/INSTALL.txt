@@ -1,0 +1,27 @@
+CUDCAMPAIGN - campaign co-op  (built on KisakCOD)
+===========================================
+
+You need your own copy of the 2007 single-player game this was built for. Nothing from the game is in this zip.
+
+1. Unzip so that the "coop" folder sits INSIDE your game folder, next to "main" and "zone":
+
+      Game folder\
+          main\   zone\   players\   ...
+          coop\          <-- this folder
+              KisakCOD-sp.exe
+
+2. First time only: run coop\install.ps1 (Windows: right click -> Run with PowerShell) or coop/install.sh (Linux).
+   It downloads the audio/video/Steam runtime files the exe needs (list and checksums in deps.txt; edit the BASE line to change the source).
+
+3. Run  coop\KisakCOD-sp.exe  - the launcher window opens. Pick:
+      Single player / Host (direct) / Join (direct) / Host online / Join online
+   Everyone playing needs the same version of this zip.
+
+Online play needs a relay server (relay\relay.py, Python 3) running somewhere everyone can reach. See relay\README.md.
+Linux / Steam Deck: install Wine, then run coop/play-linux.sh (DXVK is bundled in coop/linux/, nothing to configure).
+  Steam alternative: add KisakCOD-sp.exe as a non-Steam game and force a Proton version.
+
+This is a modified KisakCOD, licensed GPLv3 (see LICENSE-GPLv3.txt). Source and our changes: the project repository,
+and docs\our-changes-to-kisakcod.patch (applies to KisakCOD commit 8aadf94).
+KisakCOD: https://github.com/SwagSoftware/KisakCOD
+Call of Duty is a trademark of Activision. This project is not affiliated with or endorsed by Activision.

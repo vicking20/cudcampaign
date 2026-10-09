@@ -1,0 +1,4462 @@
+diff --git a/scripts/pre_build.cmake b/scripts/pre_build.cmake
+index b77b18a..053f52e 100644
+--- a/scripts/pre_build.cmake
++++ b/scripts/pre_build.cmake
+@@ -22,12 +22,16 @@ endif()
+ target_compile_definitions(${PROJECT_NAME} PUBLIC WIN32 _CONSOLE _MBCS)
+ 
+ # Set the generator platform
+-set(CMAKE_GENERATOR_PLATFORM "WIN32")
++if (CMAKE_GENERATOR MATCHES "Visual Studio")
++  set(CMAKE_GENERATOR_PLATFORM "WIN32")
++endif()
+ 
+ # If we are building on windows
+ if (WIN32)
+   # Set the generator platform
+-  set(CMAKE_GENERATOR_PLATFORM "WIN32")
++  if (CMAKE_GENERATOR MATCHES "Visual Studio")
++    set(CMAKE_GENERATOR_PLATFORM "WIN32")
++  endif()
+ 
+   # Check to see if we are running a github action
+   if (DEFINED CICD)
+diff --git a/scripts/sp/sp_files.cmake b/scripts/sp/sp_files.cmake
+index e5ad06d..5b36c32 100644
+--- a/scripts/sp/sp_files.cmake
++++ b/scripts/sp/sp_files.cmake
+@@ -206,6 +206,9 @@ set(SERVER
+     "${SRC_DIR}/server/sv_demo.cpp"
+     "${SRC_DIR}/server/sv_init.cpp"
+     "${SRC_DIR}/server/sv_main.cpp"
++    "${SRC_DIR}/server/sv_coop.cpp"
++    "${SRC_DIR}/win32/win_coop_launcher.cpp"
++    "${SRC_DIR}/win32/win_coop_gamepad.cpp"
+     "${SRC_DIR}/server/sv_public.h"
+     "${SRC_DIR}/server/sv_save.h"
+     "${SRC_DIR}/server/sv_snapshot.cpp"
+diff --git a/src/DynEntity/DynEntity_client.cpp b/src/DynEntity/DynEntity_client.cpp
+index ef30669..43c3069 100644
+--- a/src/DynEntity/DynEntity_client.cpp
++++ b/src/DynEntity/DynEntity_client.cpp
+@@ -2,7 +2,7 @@
+ #include <universal/surfaceflags.h>
+ #include <qcommon/qcommon.h>
+ 
+-#include "dynentity_client.h"
++#include "DynEntity_client.h"
+ #include <gfx_d3d/r_scene.h>
+ #include <cgame/cg_local.h>
+ #include <EffectsCore/fx_system.h>
+diff --git a/src/bgame/bg_public.h b/src/bgame/bg_public.h
+index dbda5a2..672ccef 100644
+--- a/src/bgame/bg_public.h
++++ b/src/bgame/bg_public.h
+@@ -587,7 +587,7 @@ enum MissileFlightMode : __int32
+     MISSILEFLIGHTMODE_DIRECT = 0x1,
+ };
+ 
+-enum team_t;
++enum team_t : __int32;
+ #ifdef KISAK_MP
+ struct corpse_ent_t // sizeof=0x4
+ {                                       // ...
+diff --git a/src/cgame/cg_ents.cpp b/src/cgame/cg_ents.cpp
+index c6fbcd3..16c725b 100644
+--- a/src/cgame/cg_ents.cpp
++++ b/src/cgame/cg_ents.cpp
+@@ -23,6 +23,10 @@
+ 
+ #include <bgame/bg_local.h>
+ 
++int SV_CoopViewClient(); // COOP (server/sv_coop.cpp)
++float g_coopPlayerPitch[64]; // COOP: view pitch of drawn players, used by the pose controller
++extern int g_coopBodyEnt;  // COOP: entity drawn as player 0's body (server/sv_coop.cpp)
++
+ void __cdecl LocalConvertQuatToMat(const DObjAnimMat *mat, float (*axis)[3])
+ {
+     double v4; // fp5
+@@ -1871,9 +1875,27 @@ void __cdecl CG_ProcessEntity(int localClientNum, centity_s *cent)
+     switch (cent->nextState.eType)
+     {
+     case ET_GENERAL:
++        if (cent->nextState.number == g_coopBodyEnt) // COOP: player 0's body
++        {
++            if (SV_CoopViewClient() == 0)
++                return; // that's us
++            g_coopPlayerPitch[cent->nextState.number & 63] = cent->pose.angles[0];
++            cent->pose.angles[0] = 0.0f;
++            cent->pose.angles[2] = 0.0f;
++        }
+         CG_General(localClientNum, cent);
+         break;
+     case ET_PLAYER:
++        // COOP: draw other players' bodies (never the one we're looking through).
++        // Bodies only turn left/right: drop the view pitch/roll, or they pivot around the feet.
++        if (cent->nextState.number != SV_CoopViewClient())
++        {
++            g_coopPlayerPitch[cent->nextState.number & 63] = cent->pose.angles[0]; // bent into the spine (cg_pose.cpp)
++            cent->pose.angles[0] = 0.0f;
++            cent->pose.angles[2] = 0.0f;
++            CG_General(localClientNum, cent);
++        }
++        return;
+     case ET_INVISIBLE:
+         return;
+     case ET_ITEM:
+diff --git a/src/cgame/cg_main.cpp b/src/cgame/cg_main.cpp
+index 484dba7..1ced8b8 100644
+--- a/src/cgame/cg_main.cpp
++++ b/src/cgame/cg_main.cpp
+@@ -245,14 +245,14 @@ void CG_RegisterDvars()
+     cg_drawBreathHint = Dvar_RegisterBool("cg_drawBreathHint", 1, DVAR_ARCHIVE, "Draw a 'hold breath to steady' hint");
+     cg_drawMantleHint = Dvar_RegisterBool("cg_drawMantleHint", 1, DVAR_ARCHIVE, "Draw a 'press key to mantle' hint");
+     replay_time = Dvar_RegisterBool("replay_time", 0, DVAR_ARCHIVE, "Draw replay time");
+-    cg_drawFPS = Dvar_RegisterEnum("cg_drawFPS", cg_drawFpsNames, 1, DVAR_ARCHIVE, "Draw frames per second");
++    cg_drawFPS = Dvar_RegisterEnum("cg_drawFPS", cg_drawFpsNames, 0, DVAR_ARCHIVE, "Draw frames per second"); // COOP: off by default (was 1)
+     cg_drawFPSLabels = Dvar_RegisterBool("cg_drawFPSLabels", 1, DVAR_ARCHIVE, "Draw FPS Info Labels");
+     DvarLimits limits;
+     limits.value.min = -200.0f;
+     limits.value.max = 640.0f;
+     //cg_debugInfoCornerOffset = Dvar_RegisterVec2("cg_debugInfoCornerOffset", 20.0, -20.0, -200.0, 640.0, v5, v4);
+     cg_debugInfoCornerOffset = Dvar_RegisterVec2("cg_debugInfoCornerOffset", 5.0, -5.0, limits, DVAR_ARCHIVE, "Offset from top-right corner, for cg_drawFPS, etc");
+-    cg_drawVersion = Dvar_RegisterBool("cg_drawVersion", 1, 0, "Draw the game version");
++    cg_drawVersion = Dvar_RegisterBool("cg_drawVersion", 0, 0, "Draw the game version"); // COOP: off by default (was 1)
+     cg_drawVersionX = Dvar_RegisterFloat("cg_drawVersionX", 50.0, 0.0, 512.0, DVAR_NOFLAG, "X offset for the version string");
+     cg_drawVersionY = Dvar_RegisterFloat("cg_drawVersionY", 18.0, 0.0, 512.0, DVAR_NOFLAG, "Y offset for the version string");
+     snd_drawInfo = Dvar_RegisterEnum("snd_drawInfo", snd_drawInfoStrings, 0, 0, "Draw debugging information for sounds");
+diff --git a/src/cgame/cg_pose.cpp b/src/cgame/cg_pose.cpp
+index 3c60ebf..85f7993 100644
+--- a/src/cgame/cg_pose.cpp
++++ b/src/cgame/cg_pose.cpp
+@@ -334,6 +334,38 @@ notSet:
+     }
+ }
+ 
++// COOP: other players' bodies look up/down by bending the upper spine by their view pitch.
++// coop_aim_axis (0/1/2) and coop_aim_scale pick the bone axis and amount (tuned by eye).
++extern float g_coopPlayerPitch[64];
++extern float g_coopPlayerLean[64];
++extern int g_coopBodyEnt;
++static void CG_CoopPlayer_DoControllers(const cpose_t *pose, const DObj_s *obj, int *partBits)
++{
++    static unsigned int spineName;
++    if (!spineName)
++        spineName = SL_FindString("j_spineupper");
++    unsigned char bone;
++    if (!spineName || !DObjGetBoneIndex(obj, spineName, &bone))
++        return;
++    const centity_s *cent = (const centity_s *)pose; // pose is the first member of centity_s
++    float pitch = g_coopPlayerPitch[cent->nextState.number & 63];
++    if (pitch > 180.0f)
++        pitch -= 360.0f;
++    const dvar_s *axisVar = Dvar_FindVar("coop_aim_axis");
++    const dvar_s *scaleVar = Dvar_FindVar("coop_aim_scale");
++    int axis = axisVar ? atoi(Dvar_DisplayableValue(axisVar)) : 0;
++    float scale = (scaleVar && *Dvar_DisplayableValue(scaleVar)) ? (float)atof(Dvar_DisplayableValue(scaleVar)) : 1.0f;
++    float angles[3] = { 0.0f, 0.0f, 0.0f };
++    angles[(axis >= 0 && axis < 3) ? axis : 0] = pitch * scale;
++    // lean (Q/E): tilt the upper body sideways. coop_lean_axis / coop_lean_scale (degrees at full lean)
++    const dvar_s *leanAxisVar = Dvar_FindVar("coop_lean_axis");
++    const dvar_s *leanScaleVar = Dvar_FindVar("coop_lean_scale");
++    int leanAxis = (leanAxisVar && *Dvar_DisplayableValue(leanAxisVar)) ? atoi(Dvar_DisplayableValue(leanAxisVar)) : 2;
++    float leanScale = (leanScaleVar && *Dvar_DisplayableValue(leanScaleVar)) ? (float)atof(Dvar_DisplayableValue(leanScaleVar)) : 25.0f;
++    angles[(leanAxis >= 0 && leanAxis < 3) ? leanAxis : 2] += g_coopPlayerLean[cent->nextState.number & 63] * leanScale;
++    DObjSetControlTagAngles((DObj_s *)obj, partBits, bone, angles);
++}
++
+ void __cdecl CG_DoControllers(const cpose_t *pose, const DObj_s *obj, int *partBits)
+ {
+     int setPartBits[4];
+@@ -354,6 +386,13 @@ void __cdecl CG_DoControllers(const cpose_t *pose, const DObj_s *obj, int *partB
+     case ET_ACTOR_CORPSE:
+         CG_Actor_DoControllers(pose, obj, partBits);
+         break;
++    case ET_PLAYER: // COOP
++        CG_CoopPlayer_DoControllers(pose, obj, partBits);
++        break;
++    case ET_GENERAL: // COOP: player 0's body entity
++        if (((const centity_s *)pose)->nextState.number == g_coopBodyEnt)
++            CG_CoopPlayer_DoControllers(pose, obj, partBits);
++        break;
+     default:
+         break;
+     }
+diff --git a/src/cgame/cg_predict.cpp b/src/cgame/cg_predict.cpp
+index 87945a1..939b3c7 100644
+--- a/src/cgame/cg_predict.cpp
++++ b/src/cgame/cg_predict.cpp
+@@ -297,6 +297,8 @@ void __cdecl CG_InterpolatePlayerState(int localClientNum, int grabAngles, int g
+     }
+ }
+ 
++bool SV_CoopIsGuest(); // COOP (server/sv_coop.cpp)
++
+ void __cdecl CG_RestorePlayerOrientation(cg_s *cgameGlob)
+ {
+     double v2; // fp0
+@@ -456,7 +458,8 @@ void __cdecl CG_PredictPlayerState_Internal(int localClientNum) // KISAKTODO: us
+             CG_RestorePlayerOrientation(cgArray);
+         cgsArray[0].started = 1;
+     }
+-    if (cgArray[0].demoType && cg_paused->current.integer != 2 && !cl_freemove->current.integer)
++    // COOP: a guest replays the host's stream but is a live player - predict normally
++    if (cgArray[0].demoType && !SV_CoopIsGuest() && cg_paused->current.integer != 2 && !cl_freemove->current.integer)
+     {
+         CG_InterpolatePlayerState(localClientNum, 0, 1);
+         v36[0] = cgArray[0].predictedPlayerState.viewangles[0] - cgArray[0].predictedPlayerState.delta_angles[0];
+diff --git a/src/cgame/cg_snapshot.cpp b/src/cgame/cg_snapshot.cpp
+index 7dbe77b..d967ff4 100644
+--- a/src/cgame/cg_snapshot.cpp
++++ b/src/cgame/cg_snapshot.cpp
+@@ -17,6 +17,8 @@
+ #include <gfx_d3d/r_model.h>
+ #include "cg_servercmds.h"
+ 
++bool SV_CoopIsGuest(); // COOP (server/sv_coop.cpp)
++
+ unsigned int g_centInPrevSnapshot[68]{ 0 };
+ bool g_clientDirty[MAX_GENTITIES];
+ 
+@@ -748,7 +750,7 @@ void __cdecl CG_ProcessNextSnap(int localClientNum)
+                 ++entityNums;
+             } while (v15 < *p_numEntities);
+         }
+-        if (cgArray[0].demoType || cg_nopredict->current.enabled)
++        if ((cgArray[0].demoType && !SV_CoopIsGuest()) || cg_nopredict->current.enabled) // COOP
+             CG_TransitionPlayerState(localClientNum, &nextSnap->ps, &snap->ps);
+         CG_CheckSnapshot(localClientNum, "CG_ProcessNextSnap - post");
+     }
+diff --git a/src/cgame/cg_weapons.cpp b/src/cgame/cg_weapons.cpp
+index 7c045d3..aa15ecf 100644
+--- a/src/cgame/cg_weapons.cpp
++++ b/src/cgame/cg_weapons.cpp
+@@ -2441,6 +2441,39 @@ void __cdecl CG_EjectWeaponBrass(int32_t localClientNum, const entityState_s *en
+     }
+ }
+ 
++#ifdef KISAK_SP
++// COOP: another player's shot (arrives as a fire event on their entity): muzzle flash on the gun
++// held by their body, and a tracer from the muzzle along their aim. The real bullet is simulated
++// by the server on every machine; this only draws it.
++extern float g_coopPlayerPitch[64];
++extern int g_coopBodyEnt;
++static void CG_CoopRemoteFire(int32_t localClientNum, int32_t number, uint32_t weapon, const WeaponDef *weaponDef)
++{
++    int32_t body = number == 0 ? g_coopBodyEnt : number; // player 0 is drawn by a separate body entity
++    if (body < 0)
++        return;
++    centity_s *bodyCent = CG_GetEntity(localClientNum, body);
++    DObj_s *obj = Com_GetClientDObj(body, localClientNum);
++    if (!bodyCent || !obj)
++        return;
++    WeaponFlash(localClientNum, body, weapon, 0, scr_const.tag_flash);
++    if (weaponDef->weapType != WEAPTYPE_BULLET)
++        return;
++    float muzzle[3];
++    if (!CG_DObjGetWorldTagPos(&bodyCent->pose, obj, scr_const.tag_flash, muzzle))
++        return;
++    float ang[3] = { g_coopPlayerPitch[number & 63], bodyCent->nextState.lerp.apos.trBase[1], 0.0f };
++    float fwd[3], end[3];
++    AngleVectors(ang, fwd, 0, 0);
++    Vec3Mad(muzzle, 8192.0f, fwd, end);
++    trace_t tr;
++    CG_LocationalTrace(&tr, muzzle, end, body, MASK_SHOT);
++    float hit[3];
++    Vec3Lerp(muzzle, end, tr.fraction, hit);
++    CG_SpawnTracer(localClientNum, muzzle, hit);
++}
++#endif
++
+ void __cdecl CG_FireWeapon(
+     int32_t localClientNum,
+     centity_s *cent,
+@@ -2485,6 +2518,8 @@ void __cdecl CG_FireWeapon(
+                 DrawBulletImpacts(localClientNum, cent, weaponDef, tagName, ps);
+ #elif KISAK_SP
+             isPlayer = cgameGlob->nextSnap->ps.clientNum == p_nextState->number;
++            if (!isPlayer && p_nextState->eType == ET_PLAYER && p_nextState->number < 4)
++                CG_CoopRemoteFire(localClientNum, p_nextState->number, weapon, weaponDef);
+ #endif
+ 
+             if (isPlayer)
+diff --git a/src/client/cl_console.cpp b/src/client/cl_console.cpp
+index 6cda8d2..c48d1fb 100644
+--- a/src/client/cl_console.cpp
++++ b/src/client/cl_console.cpp
+@@ -99,6 +99,8 @@ void __cdecl TRACK_cl_console()
+     track_static_alloc_internal(&con, 84684, "con", 10);
+ }
+ 
++static cmd_function_s Con_ToggleConsole_f_VAR; // COOP
++
+ void __cdecl Con_ToggleConsole()
+ {
+     int32_t localClientNum; // [esp+0h] [ebp-4h]
+@@ -362,6 +364,7 @@ void __cdecl Con_Init()
+     Cmd_AddCommandInternal("chatmodepublic", Con_ChatModePublic_f, &Con_ChatModePublic_f_VAR);
+     Cmd_AddCommandInternal("chatmodeteam", Con_ChatModeTeam_f, &Con_ChatModeTeam_f_VAR);
+     Cmd_AddCommandInternal("clear", Con_Clear_f, &Con_Clear_f_VAR);
++    Cmd_AddCommandInternal("toggleconsole", Con_ToggleConsole, &Con_ToggleConsole_f_VAR); // COOP: missing in KisakCOD SP
+ }
+ 
+ void __cdecl SetupChatField(int32_t localClientNum, int32_t teamChat, int32_t widthInPixels)
+diff --git a/src/client/cl_input.cpp b/src/client/cl_input.cpp
+index e9ab8fe..d4845d7 100644
+--- a/src/client/cl_input.cpp
++++ b/src/client/cl_input.cpp
+@@ -971,6 +971,8 @@ void __cdecl CL_KeyMove(usercmd_s *cmd)
+ }
+ #endif
+ 
++bool SV_CoopIsGuest(); // COOP (server/sv_coop.cpp)
++
+ int __cdecl CL_AllowInput()
+ {
+     int integer; // r11
+@@ -986,6 +988,8 @@ int __cdecl CL_AllowInput()
+         return 1;
+     if (cl_freemove->current.integer)
+         return 1;
++    if (SV_CoopIsGuest()) // COOP: the guest plays live input while replaying the host's stream
++        return 1;
+     v2 = G_DemoPlaying() != 0;
+     result = 0;
+     if (!v2)
+@@ -1592,6 +1596,110 @@ int __cdecl CG_HandleLocationSelectionInput(int localClientNum, usercmd_s *cmd)
+     }
+ }
+ 
++// ---- COOP: native gamepad (XInput), see win32/win_coop_gamepad.cpp
++struct CoopPadState
++{
++    float lx, ly, rx, ry, lt, rt;
++    unsigned short buttons;
++};
++bool Coop_PadRead(CoopPadState *out);
++
++namespace
++{
++// Buttons run the same console commands a keyboard binding would, so every game rule (stance toggles,
++// sprint, ADS, ...) is reused. Only the sticks are handled directly.
++struct PadBinding { unsigned short mask; const char *down, *up; bool was; };
++PadBinding s_padButtons[] = {
++    { 0x1000, "+gostand", "-gostand", false },         // A: jump
++    { 0x2000, "togglecrouch", 0, false },              // B: crouch / stand
++    { 0x4000, "+usereload", "-usereload", false },     // X: use / reload
++    { 0x8000, "weapnext", 0, false },                  // Y: next weapon
++    { 0x0100, "+frag", "-frag", false },               // LB: frag grenade
++    { 0x0200, "+smoke", "-smoke", false },             // RB: flash / smoke
++    { 0x0040, "+sprint", "-sprint", false },           // left stick click: sprint
++    { 0x0080, "+melee", "-melee", false },             // right stick click: melee
++    { 0x0004, "+leanleft", "-leanleft", false },       // d-pad left: lean left
++    { 0x0008, "+leanright", "-leanright", false },     // d-pad right: lean right
++    { 0x0002, "toggleprone", 0, false },               // d-pad down: prone
++    { 0x0001, "+nightvision", "-nightvision", false }, // d-pad up: night vision
++};
++bool s_padAttack, s_padAds;
++
++void PadEdge(bool now, bool *was, const char *down, const char *up)
++{
++    if (now == *was)
++        return;
++    *was = now;
++    const char *cmd = now ? down : up;
++    if (cmd)
++        Cbuf_AddText(0, va("%s\n", cmd));
++}
++
++void PadReleaseAll()
++{
++    for (PadBinding &b : s_padButtons)
++        PadEdge(false, &b.was, b.down, b.up);
++    PadEdge(false, &s_padAttack, "+attack", "-attack");
++    PadEdge(false, &s_padAds, "+speed_throw", "-speed_throw");
++}
++
++float PadDvar(const char *name, float def)
++{
++    const dvar_s *d = Dvar_FindVar(name);
++    return (d && *Dvar_DisplayableValue(d)) ? (float)atof(Dvar_DisplayableValue(d)) : def;
++}
++
++// radial dead zone, rescaled so the stick still reaches 1.0, then a curve for fine aiming
++void PadStick(float x, float y, float dead, float *ox, float *oy, float curve)
++{
++    float m = sqrtf(x * x + y * y);
++    if (m < dead)
++    {
++        *ox = *oy = 0.0f;
++        return;
++    }
++    float scaled = (m - dead) / (1.0f - dead);
++    if (scaled > 1.0f)
++        scaled = 1.0f;
++    float shaped = powf(scaled, curve);
++    *ox = x / m * shaped;
++    *oy = y / m * shaped;
++}
++
++void CL_CoopGamepadMove(usercmd_s *cmd)
++{
++    CoopPadState p;
++    if (!Coop_PadRead(&p) || Key_IsCatcherActive(0, KEYCATCH_UI))
++    {
++        PadReleaseAll(); // no pad, or a menu is open: let go of everything
++        return;
++    }
++    for (PadBinding &b : s_padButtons)
++        PadEdge((p.buttons & b.mask) != 0, &b.was, b.down, b.up);
++    PadEdge(p.rt > 0.5f, &s_padAttack, "+attack", "-attack");
++    PadEdge(p.lt > 0.5f, &s_padAds, "+speed_throw", "-speed_throw");
++
++    // movement (left stick)
++    float mx, my;
++    PadStick(p.lx, p.ly, 0.24f, &mx, &my, 1.0f);
++    cmd->forwardmove = ClampChar(cmd->forwardmove + (int)(my * 127.0f));
++    cmd->rightmove = ClampChar(cmd->rightmove + (int)(mx * 127.0f));
++
++    // aiming (right stick): degrees per second at full deflection; slower while aiming down sights
++    float ax, ay;
++    PadStick(p.rx, p.ry, 0.18f, &ax, &ay, 1.7f);
++    float yawRate = PadDvar("pad_yawspeed", 300.0f), pitchRate = PadDvar("pad_pitchspeed", 200.0f);
++    if (kb[KEY_SPEED].active)
++    {
++        yawRate *= 0.6f;
++        pitchRate *= 0.6f;
++    }
++    float dt = frame_msec * 0.001f;
++    clients[0].viewangles[YAW] -= ax * yawRate * dt;
++    clients[0].viewangles[PITCH] -= ay * pitchRate * dt * (PadDvar("pad_invert", 0.0f) != 0.0f ? -1.0f : 1.0f);
++}
++} // namespace
++
+ void __cdecl CL_CreateCmd(usercmd_s *result)
+ {
+     float oldAngles; // fp31
+@@ -1604,9 +1712,7 @@ void __cdecl CL_CreateCmd(usercmd_s *result)
+         CL_CmdButtons(result);
+         CL_KeyMove(result);
+         CL_MouseMove(result);
+-        // KISAKTODO
+-        //if (GPad_IsActive(CL_ControllerIndexFromClientNum(0)))
+-        //    CL_GamepadMove(result);
++        CL_CoopGamepadMove(result); // COOP: native gamepad (does nothing when no controller is connected)
+         if (clients[0].viewangles[0] - oldAngles <= 90.0)
+         {
+             if (oldAngles - clients[0].viewangles[0] > 90.0)
+diff --git a/src/client/cl_keys.cpp b/src/client/cl_keys.cpp
+index e9515d9..f1cff9f 100644
+--- a/src/client/cl_keys.cpp
++++ b/src/client/cl_keys.cpp
+@@ -1468,7 +1468,8 @@ void __cdecl CL_InitKeyCommands()
+ bool __cdecl CL_IsConsoleKey(int32_t key)
+ {
+     // K_KP_PGUP isn't apart of ASCII
+-    return (key == '`' || key == '^' || key == K_KP_PGUP || key == '~');
++    // COOP: F1 too - backtick does not reach the game under wine
++    return (key == '`' || key == '^' || key == K_KP_PGUP || key == '~' || key == K_F1);
+ }
+ 
+ #ifdef KISAK_MP
+diff --git a/src/client/cl_main.cpp b/src/client/cl_main.cpp
+index b9009d8..968749f 100644
+--- a/src/client/cl_main.cpp
++++ b/src/client/cl_main.cpp
+@@ -800,6 +800,9 @@ void __cdecl CheckForConsoleGuidePause(int localClientNum)
+ #endif
+ }
+ 
++extern int g_coopVictoryAtMs; // COOP (game/g_main.cpp)
++extern char g_nextMap[64];    // game/g_main.cpp
++
+ void __cdecl CL_Frame(int localClientNum, int msec)
+ {
+     int v14; // r29
+@@ -809,6 +812,49 @@ void __cdecl CL_Frame(int localClientNum, int msec)
+     int v24; // r3
+ 
+     v14 = msec;
++    // COOP: the host moves on after the victory screen by itself (the server stops while that menu
++    // is open, so this timer runs here, on the client)
++    if (g_coopVictoryAtMs && Sys_Milliseconds() > g_coopVictoryAtMs)
++    {
++        g_coopVictoryAtMs = 0;
++        if (g_nextMap[0])
++            Cbuf_AddText(0, va("spmap %s\n", g_nextMap));
++    }
++    // COOP: +set coop_autostart 1 : pass the mission briefing by itself once the level has loaded
++    // (same as pressing a key there), so neither host nor guest has to click before the mission starts
++    {
++        static int lastTry, tries;
++        static bool passedBriefing;
++        const dvar_s *as = Dvar_FindVar("coop_autostart");
++        if (as && atoi(Dvar_DisplayableValue(as)) && CL_GetLocalClientConnectionState(0) == CA_ACTIVE)
++        {
++            const char *top = UI_GetTopActiveMenuName(0);
++            if (top && !I_stricmp(top, "briefing") && Sys_Milliseconds() - lastTry > 1000 && tries < 8)
++            {
++                lastTry = Sys_Milliseconds();
++                tries++;
++                static const int keys[] = { 13, 32, 200 }; // enter, space, mouse1
++                for (int key : keys)
++                {
++                    UI_KeyEvent(0, key, 1);
++                    UI_KeyEvent(0, key, 0);
++                }
++                passedBriefing = true;
++                Com_Printf(CON_CHANNEL_CLIENT, "COOP: auto-passed the briefing (try %d)\n", tries);
++            }
++            else if (!top || I_stricmp(top, "briefing"))
++            {
++                tries = 0;
++                if (passedBriefing)
++                {
++                    // the menu code does not unpause while rendering is skipped (a guest fast-forwarding
++                    // through a long replay), which left the guest paused behind a blurred menu
++                    passedBriefing = false;
++                    Dvar_SetIntByName("cl_paused", 0);
++                }
++            }
++        }
++    }
+     Hunk_CheckTempMemoryClear();
+     Hunk_CheckTempMemoryHighClear();
+     //PIXSetMarker(0xFFFFFFFF, "CL_Frame");
+diff --git a/src/game/actor_aim.cpp b/src/game/actor_aim.cpp
+index 5e03802..147cc6c 100644
+--- a/src/game/actor_aim.cpp
++++ b/src/game/actor_aim.cpp
+@@ -688,7 +688,7 @@ void __cdecl Actor_Shoot(actor_s *self, float accuracyMod, float (*posOverride)[
+ 
+     if (self->lastShotTime == level.time)
+     {
+-        Com_PrintError(CON_CHANNEL_AI, "ERROR: Attempt for same actor (entnum %d) to shoot/melee more than once in a frame.\n", ent->s.number);
++        Com_DPrintf(CON_CHANNEL_AI, "Attempt for same actor (entnum %d) to shoot/melee more than once in a frame (ignored).\n", ent->s.number); // COOP: was a red error on screen; harmless, the second shot is just skipped
+         return;
+     }
+ 
+@@ -785,9 +785,9 @@ void __cdecl Actor_ShootBlank(actor_s *self)
+         MyAssertHandler("c:\\trees\\cod3\\cod3src\\src\\game\\actor_aim.cpp", 794, 0, "%s", "self->ent");
+     if (self->lastShotTime == level.time)
+     {
+-        Com_PrintError(
++        Com_DPrintf(
+             CON_CHANNEL_AI,
+-            "ERROR: Attempt for same actor (entnum %d) to shoot/melee more than once in a frame.\n",
++            "Attempt for same actor (entnum %d) to shoot/melee more than once in a frame (ignored).\n",
+             self->ent->s.number);
+     }
+     else
+@@ -851,9 +851,9 @@ gentity_s *__cdecl Actor_Melee(actor_s *self, const float *direction)
+     WeaponIndexForName = G_GetWeaponIndexForName(v5);
+     if (self->lastShotTime == level.time)
+     {
+-        Com_PrintError(
++        Com_DPrintf(
+             CON_CHANNEL_AI,
+-            "ERROR: Attempt for same actor (entnum %d) to shoot/melee more than once in a frame.\n",
++            "Attempt for same actor (entnum %d) to shoot/melee more than once in a frame (ignored).\n",
+             ent->s.number);
+         return 0;
+     }
+diff --git a/src/game/actor_spawner.cpp b/src/game/actor_spawner.cpp
+index ec3f2b5..d757d2d 100644
+--- a/src/game/actor_spawner.cpp
++++ b/src/game/actor_spawner.cpp
+@@ -4,6 +4,7 @@
+ 
+ #include <universal/q_shared.h>
+ #include "actor_spawner.h"
++#include <server/sv_game.h>
+ #include "g_main.h"
+ #include <universal/com_math.h>
+ #include "actor.h"
+@@ -69,6 +70,58 @@ int __cdecl PointCouldSeeSpawn(const float *vEyePos, const float *vSpawnPos, int
+     return 1;
+ }
+ 
++// COOP: players and AI share one pool of 33 "awareness" records (a player that cannot get one fails to join
++// with an error). In a co-op game keep a record free for every player that may still join: no new AI while
++// the pool is that full. Depends only on saved state (coop_maxplayers, who is connected), so every machine
++// decides the same. Solo play (coop_maxplayers 1) is not affected.
++static bool Coop_SentientPoolTight()
++{
++    int maxPlayers = Dvar_GetInt("coop_maxplayers");
++    if (maxPlayers < 2)
++        return false;
++    int used = 0, players = 0;
++    for (int i = 0; i < 33; i++)
++        used += level.sentients[i].inuse != 0;
++    for (int n = 0; n < COOP_MAX_CLIENTS; n++)
++        players += level.clients[n].pers.connected == CON_CONNECTED;
++    int reserve = maxPlayers - players;
++    if (reserve < 0)
++        reserve = 0;
++    return used + reserve >= 33;
++}
++
++void Actor_SetScriptGoalEntity(actor_s *self, gentity_s *pGoalEnt); // actor_script_cmd.cpp
++void Actor_SetGoalRadius(actor_goal_s *goal, float radius);          // actor.cpp
++
++// An extra enemy has no mission script to give it a goal, so it would stand where it spawned: send it after the
++// nearest living player. Uses only game state, so every machine picks the same player.
++static void Coop_SendCloneAfterPlayer(gentity_s *clone)
++{
++    gentity_s *best = 0;
++    float bestDist = 0.0f;
++    for (int n = 0; n < COOP_MAX_CLIENTS; n++)
++    {
++        gentity_s *pl = &g_entities[n];
++        if (!pl->r.inuse || !pl->client || pl->health <= 0 || level.clients[n].ps.pm_type >= PM_DEAD)
++            continue;
++        float dx = pl->r.currentOrigin[0] - clone->r.currentOrigin[0];
++        float dy = pl->r.currentOrigin[1] - clone->r.currentOrigin[1];
++        float d = dx * dx + dy * dy;
++        if (!best || d < bestDist)
++        {
++            best = pl;
++            bestDist = d;
++        }
++    }
++    if (best)
++    {
++        Actor_SetScriptGoalEntity(clone->actor, best);
++        Actor_SetGoalRadius(&clone->actor->scriptGoal, 700.0f);
++    }
++}
++
++static bool s_cloningEnemies; // COOP: SpawnActor is making an extra enemy (coop_enemies)
++
+ gentity_s *__cdecl SpawnActor(gentity_s *ent, unsigned int targetname, enumForceSpawn forceSpawn, int getEnemyInfo)
+ {
+     unsigned int v8; // r3
+@@ -91,6 +144,11 @@ gentity_s *__cdecl SpawnActor(gentity_s *ent, unsigned int targetname, enumForce
+         Com_DPrintf(CON_CHANNEL_AI, "Attempted spawn prevented by ai_disableSpawn.\n");
+         return 0;
+     }
++    if (Coop_SentientPoolTight())
++    {
++        Com_DPrintf(CON_CHANNEL_AI, "spawn held back: the AI/player record pool is full\n");
++        return 0;
++    }
+     if (!ent->count)
+     {
+         v8 = ent->targetname;
+@@ -154,11 +212,37 @@ gentity_s *__cdecl SpawnActor(gentity_s *ent, unsigned int targetname, enumForce
+             Actor_UpdateSight(actor);
+             Actor_UpdateThreat(actor);
+             Actor_InitAnimScript(spawn->actor);
+-            Scr_AddEntity(spawn);
+-            Scr_Notify(ent, scr_const.spawned, 1u);
++            if (!s_cloningEnemies) // COOP: an extra enemy is invisible to scripts (no return value, no "spawned")
++            {
++                Scr_AddEntity(spawn);
++                Scr_Notify(ent, scr_const.spawned, 1u);
++            }
+             count = ent->count;
+             if (count > 0)
+                 ent->count = count - 1;
++
++            // COOP (+set coop_enemies N): every enemy spawn also produces N-1 more of the same kind.
++            // They are plain AI: the script that asked for the spawn never hears about them. The spawner's
++            // remaining count is left untouched, and no state is kept between spawns, so every machine
++            // (and a late guest) makes exactly the same extra enemies.
++            if (!s_cloningEnemies && spawn->sentient && spawn->sentient->eTeam == TEAM_AXIS)
++            {
++                int extra = Dvar_GetInt("coop_enemies") - 1;
++                if (extra > 0)
++                {
++                    s_cloningEnemies = true;
++                    int remaining = ent->count;
++                    for (int c = 0; c < extra; c++)
++                    {
++                        ent->count = 1; // the clone must not fail on an exhausted spawner...
++                        gentity_s *clone = SpawnActor(ent, targetname, FORCE_SPAWN, getEnemyInfo);
++                        if (clone && clone->actor)
++                            Coop_SendCloneAfterPlayer(clone);
++                    }
++                    ent->count = remaining; // ...nor use it up
++                    s_cloningEnemies = false;
++                }
++            }
+             return spawn;
+         }
+         else
+@@ -182,6 +266,145 @@ gentity_s *__cdecl SpawnActor(gentity_s *ent, unsigned int targetname, enumForce
+     }
+ }
+ 
++// COOP horde mode (+set coop_horde N): survive N waves of enemies on whatever map is loaded. Enemies come out of
++// the map's own enemy spawners and run at the nearest player. Everything runs in the game frame from saved dvars
++// and level.time only, so every machine (and a late guest) does exactly the same thing.
++static bool Coop_HordeIsEnemySpawner(gentity_s *ent)
++{
++    if (!ent->r.inuse || ent->s.eType != ET_ACTOR_SPAWNER || !ent->classname)
++        return false;
++    const char *c = SL_ConvertToString(ent->classname);
++    if (!c)
++        return false;
++    char low[96];
++    int i = 0;
++    for (; c[i] && i < 95; i++)
++        low[i] = (char)tolower((unsigned char)c[i]);
++    low[i] = 0;
++    return strstr(low, "enemy") || strstr(low, "axis") || strstr(low, "opfor") || strstr(low, "opposing");
++}
++
++static int Coop_HordeAliveEnemies()
++{
++    int n = 0;
++    for (actor_s *a = Actor_FirstActor(1 << TEAM_AXIS); a; a = Actor_NextActor(a, 1 << TEAM_AXIS))
++        n++;
++    return n;
++}
++
++static bool Coop_HordeSpawnOne(int salt)
++{
++    int total = level.num_entities;
++    int start = (level.time / 50 + salt * 7) % (total > 0 ? total : 1);
++    for (int tries = 0, idx = start, spawners = 0; tries < total && spawners < 10; tries++, idx = (idx + 1) % total)
++    {
++        gentity_s *sp = &level.gentities[idx];
++        if (!Coop_HordeIsEnemySpawner(sp))
++            continue;
++        spawners++;
++        bool tooClose = false;
++        for (int n = 0; n < COOP_MAX_CLIENTS; n++)
++        {
++            gentity_s *pl = &g_entities[n];
++            if (!pl->r.inuse || !pl->client)
++                continue;
++            float dx = pl->r.currentOrigin[0] - sp->r.currentOrigin[0];
++            float dy = pl->r.currentOrigin[1] - sp->r.currentOrigin[1];
++            if (dx * dx + dy * dy < 400.0f * 400.0f)
++                tooClose = true;
++        }
++        if (tooClose)
++            continue;
++        int savedCount = sp->count;
++        sp->count = 1;
++        s_cloningEnemies = true; // no script hears about it, and no copies are made
++        gentity_s *e = SpawnActor(sp, sp->targetname, CHECK_SPAWN, 1);
++        s_cloningEnemies = false;
++        sp->count = savedCount;
++        if (e && e->actor)
++        {
++            if (e->sentient && e->sentient->eTeam != TEAM_AXIS)
++            {
++                G_FreeEntity(e); // a spawner we mistook for an enemy one
++                continue;
++            }
++            Coop_SendCloneAfterPlayer(e);
++            return true;
++        }
++    }
++    return false;
++}
++
++void Coop_HordeFrame()
++{
++    int waves = Dvar_GetInt("coop_horde");
++    if (waves <= 0 || level.loading || level.changelevel || level.reloadDelayTime)
++        return;
++    int living = 0;
++    for (int n = 0; n < COOP_MAX_CLIENTS; n++)
++    {
++        gentity_s *pl = &g_entities[n];
++        if (pl->r.inuse && pl->client && pl->health > 0 && level.clients[n].ps.pm_type < PM_DEAD)
++            living++;
++    }
++    if (!living)
++        return;
++    int wave = Dvar_GetInt("coop_horde_wave");
++    int left = Dvar_GetInt("coop_horde_left");
++    int next = Dvar_GetInt("coop_horde_next");
++    int deadline = Dvar_GetInt("coop_horde_dl");
++    if (next > level.time + 300000 || deadline > level.time + 300000) // state from before a map change
++    {
++        wave = left = next = deadline = 0;
++        Dvar_SetIntByName("coop_horde_wave", 0);
++        Dvar_SetIntByName("coop_horde_left", 0);
++        Dvar_SetIntByName("coop_horde_dl", 0);
++    }
++    if (!next)
++    {
++        Dvar_SetIntByName("coop_horde_next", level.time + 15000); // time to look around before wave 1
++        return;
++    }
++    if (level.time < next)
++        return;
++    int players = Dvar_GetInt("coop_maxplayers");
++    if (players < 1)
++        players = 1;
++    if (wave == 0 || (left == 0 && (Coop_HordeAliveEnemies() <= 2 || level.time >= deadline)) || level.time >= deadline)
++    {
++        if (wave >= waves)
++        {
++            SV_GameSendServerCommand(-1, "gm \"Horde cleared!\"");
++            Dvar_SetIntByName("coop_horde_wave", 0);
++            Dvar_SetIntByName("coop_horde_next", 0);
++            level.changelevel = 1;
++            level.bMissionSuccess = 1;
++            return;
++        }
++        wave++;
++        left = 5 + 3 * wave + 2 * (players - 1);
++        Dvar_SetIntByName("coop_horde_wave", wave);
++        Dvar_SetIntByName("coop_horde_left", left);
++        Dvar_SetIntByName("coop_horde_dl", level.time + 150000);
++        Dvar_SetIntByName("coop_horde_next", level.time + 4000);
++        SV_GameSendServerCommand(-1, va("gm \"Wave %d of %d\"", wave, waves));
++        return;
++    }
++    if (left > 0)
++    {
++        int cap = 12 + 2 * players;
++        int step = 1000;
++        if (Coop_HordeAliveEnemies() < cap && Coop_HordeSpawnOne(left))
++        {
++            Dvar_SetIntByName("coop_horde_left", left - 1);
++            step = 600;
++        }
++        Dvar_SetIntByName("coop_horde_next", level.time + step);
++        return;
++    }
++    Dvar_SetIntByName("coop_horde_next", level.time + 1000);
++}
++
+ void __cdecl G_DropActorSpawnersToFloor()
+ {
+     int entContents[MAX_GENTITIES + 1];
+diff --git a/src/game/g_active.cpp b/src/game/g_active.cpp
+index 0586ef8..78cfc1b 100644
+--- a/src/game/g_active.cpp
++++ b/src/game/g_active.cpp
+@@ -803,6 +803,12 @@ void __cdecl ClientThink(int clientNum)
+     gentity_s *v2; // r31
+ 
+     v2 = &g_entities[clientNum];
++    if (!v2->client) // COOP: should not happen; log which player instead of crashing
++    {
++        Com_Printf(CON_CHANNEL_SERVER, "COOP: ClientThink(%d) but the entity has no client (inuse %d, state %d, level time %d)\n",
++            clientNum, v2->r.inuse, svs.clients[clientNum].state, level.time);
++        return;
++    }
+     memcpy(&v2->client->pers.oldcmd, &v2->client->pers.cmd, sizeof(v2->client->pers.oldcmd));
+     SV_GetUsercmd(clientNum, &v2->client->pers.cmd);
+     ClientThink_real(v2);
+@@ -864,7 +870,8 @@ void __cdecl ClientEndFrame(gentity_s *ent)
+     }
+     if (!ent->sentient)
+         MyAssertHandler("c:\\trees\\cod3\\cod3src\\src\\game\\g_active.cpp", 913, 0, "%s", "ent->sentient");
+-    Sentient_UpdateActualChainPos(ent->sentient);
++    if (ent->sentient) // COOP: a dead extra player (waiting for the checkpoint reload) has none
++        Sentient_UpdateActualChainPos(ent->sentient);
+     if (ent->client->ps.commandTime && level.time > 500)
+     {
+         Player_UpdateLookAtEntity(ent);
+@@ -884,6 +891,8 @@ gentity_s *__cdecl G_GetPlayer()
+     return level.gentities;
+ }
+ 
++void SV_CoopUpdateExtraPlayers(); // COOP (server/sv_coop.cpp)
++
+ void __cdecl G_UpdatePlayer(gentity_s *ent)
+ {
+     int v2; // r3
+@@ -894,7 +903,10 @@ void __cdecl G_UpdatePlayer(gentity_s *ent)
+         if (level.demoplaying)
+             level.demoplaying = SV_ReadPacket(v2);
+         else
++        {
+             CL_WritePacket();
++            SV_CoopUpdateExtraPlayers(); // COOP: record + run players 1..N right after player 0
++        }
+         Sentient_UpdatePlayerTrail(ent);
+     }
+ }
+diff --git a/src/game/g_client.cpp b/src/game/g_client.cpp
+index 235cf6b..c5db7a3 100644
+--- a/src/game/g_client.cpp
++++ b/src/game/g_client.cpp
+@@ -461,8 +461,16 @@ void __cdecl Client_Touch(gentity_s *pSelf, gentity_s *pOther, int bTouched)
+     }
+ }
+ 
++void SV_CoopRespawnPlayer(gentity_s *ent); // COOP (server/sv_coop.cpp)
++bool SV_CoopShouldRespawn(gentity_s *ent); // COOP (server/sv_coop.cpp)
++
+ void __cdecl respawn(gentity_s *ent)
+ {
++    if (SV_CoopShouldRespawn(ent)) // COOP: respawn beside a living partner instead of reloading
++    {
++        SV_CoopRespawnPlayer(ent);
++        return;
++    }
+     const dvar_s *v2; // r30
+     const char *v3; // r3
+     const char *v4; // r3
+@@ -500,7 +508,8 @@ char *__cdecl ClientConnect(int clientNum)
+     int integer; // r10
+     sentient_s *v5; // r30
+ 
+-    Path_InitPaths();
++    if (clientNum == 0) // COOP: re-initialising AI paths mid-level would break the AI
++        Path_InitPaths();
+     v2 = &level.clients[clientNum];
+     v3 = &g_entities[clientNum];
+     memset(v2, 0, sizeof(gclient_s));
+@@ -572,6 +581,7 @@ void __cdecl ClientSpawn(gentity_s *ent)
+     memset(client, 0, sizeof(gclient_s));
+     memcpy(&client->pers, v14, sizeof(client->pers));
+     client->ps.viewmodelIndex = viewmodelIndex;
++    client->ps.clientNum = v3; // COOP: the memset zeroed it (SP only ever had client 0)
+     client->ps.eFlags = v4;
+     maxHealth = client->pers.maxHealth;
+     client->ps.viewlocked_entNum = ENTITYNUM_NONE;
+diff --git a/src/game/g_cmds.cpp b/src/game/g_cmds.cpp
+index 9e237fd..3282942 100644
+--- a/src/game/g_cmds.cpp
++++ b/src/game/g_cmds.cpp
+@@ -1043,6 +1043,17 @@ void __cdecl ClientCommand(int clientNum, const char *s)
+         SV_Cmd_EndTokenizedString();
+         return;
+     }
++    if (!I_stricmp(v7, "coopmissionend")) // COOP test helper: finish the mission like the level script does
++    {
++        char nextMap[64] = "";
++        SV_Cmd_ArgvBuffer(1, nextMap, sizeof(nextMap));
++        if (nextMap[0])
++            G_SetNextMap(nextMap);
++        level.changelevel = 1;
++        level.bMissionSuccess = 1;
++        SV_Cmd_EndTokenizedString();
++        return;
++    }
+     if (!I_stricmp(v7, "kill"))
+     {
+         Cmd_Kill_f(v3);
+diff --git a/src/game/g_main.cpp b/src/game/g_main.cpp
+index c23c1d3..6b71782 100644
+--- a/src/game/g_main.cpp
++++ b/src/game/g_main.cpp
+@@ -3,6 +3,11 @@
+ #endif
+ 
+ #include <universal/q_shared.h>
++bool SV_CoopIsGuest(); // COOP (server/sv_coop.cpp)
++void Coop_HordeFrame(); // COOP (game/actor_spawner.cpp)
++void SV_CoopLevelReset(); // COOP (server/sv_coop.cpp)
++bool SV_CoopHostHasGuest(); // COOP (server/sv_coop.cpp)
++int g_coopVictoryAtMs; // COOP: real time at which the host moves on after the victory screen (client frame acts on it)
+ #include "g_main.h"
+ #include "g_local.h"
+ #include <universal/q_shared.h>
+@@ -114,7 +119,7 @@ gentity_s g_entities[MAX_GENTITIES];
+ sentient_s g_sentients[33];
+ char g_nextMap[64];
+ level_locals_t level;
+-gclient_s g_clients[1];
++gclient_s g_clients[COOP_MAX_CLIENTS];
+ actor_s g_actors[32];
+ 
+ 
+@@ -793,7 +798,7 @@ void __cdecl TRACK_g_main()
+ {
+     track_static_alloc_internal(&level, 15892, "level", 9);
+     track_static_alloc_internal(g_entities, 1366528, "g_entities", 9);
+-    track_static_alloc_internal(g_clients, 46104, "g_clients", 9);
++    track_static_alloc_internal(g_clients, sizeof(g_clients), "g_clients", 9);
+     track_static_alloc_internal(g_sentients, 3828, "g_sentients", 5);
+     track_static_alloc_internal(entityHandlers, 1188, "entityHandlers", 9);
+     track_static_alloc_internal(g_entinfoNames, 28, "g_entinfoNames", 0);
+@@ -1184,14 +1189,18 @@ void __cdecl G_InitGame(
+     {
+         Scr_GetChecksum((unsigned int*)v32);
+         Header = SaveMemory_GetHeader(*save);
+-        if (v32[0] != Header->scrCheckSum[0] || v32[1] != Header->scrCheckSum[1] || v32[2] != Header->scrCheckSum[2])
++        // COOP: a guest follows the host's savegame with the same exe and data; its already-loaded
++        // scripts can checksum differently without being different files
++        if (!SV_CoopIsGuest() && (v32[0] != Header->scrCheckSum[0] || v32[1] != Header->scrCheckSum[1] || v32[2] != Header->scrCheckSum[2]))
+             Com_Error(ERR_DROP, "Save game saved with different script files");
+     }
+     ProfLoad_End();
++    SV_CoopLevelReset(); // COOP
++    g_coopVictoryAtMs = 0;
+     memset(g_entities, 0, sizeof(g_entities));
+     level.gentities = g_entities;
+     g_entities[ENTITYNUM_NONE].flags |= FL_OBSTACLE;
+-    level.maxclients = 1;
++    level.maxclients = COOP_MAX_CLIENTS;
+     memset(g_clients, 0, sizeof(g_clients));
+     level.clients = g_clients;
+     level.sentients = g_sentients;
+@@ -1202,19 +1211,14 @@ void __cdecl G_InitGame(
+     clients = level.clients;
+     if (level.maxclients > 0)
+     {
+-        v22 = level.clients;
+-        p_client = &g_entities[0].client;
+-        do
+-        {
+-            --maxclients;
+-            *p_client = v22++;
+-            p_client += 157;
+-        } while (maxclients);
++        // COOP: link every player slot entity to its gclient (was a raw-stride loop)
++        for (int ci = 0; ci < maxclients; ci++)
++            g_entities[ci].client = &level.clients[ci];
+     }
+-    level.num_entities = 1;
++    level.num_entities = level.maxclients; // COOP: reserve player entity slots
+     level.firstFreeEnt = 0;
+     level.lastFreeEnt = 0;
+-    SV_LocateGameData(level.gentities, 1, sizeof(gentity_s), &clients->ps, sizeof(gclient_s));
++    SV_LocateGameData(level.gentities, level.num_entities, sizeof(gentity_s), &clients->ps, sizeof(gclient_s)); // COOP
+     G_ParseHitLocDmgTable();
+     BG_LoadPenetrationDepthTable();
+     G_InitVehiclePaths();
+@@ -1353,6 +1357,9 @@ void __cdecl G_LoadNextMap()
+     const char *v0; // r4
+     char *v1; // r3
+ 
++    if (SV_CoopIsGuest()) // COOP: the guest changes level when the host does (the stream tells it)
++        return;
++
+     if (g_nextMap[0])
+     {
+         if (Dvar_GetBool("sv_cheats"))
+@@ -1372,6 +1379,7 @@ void __cdecl G_CheckReloadStatus()
+ {
+     const char *v0; // r3
+ 
++
+     if (level.changelevel)
+     {
+         level.changelevel = 0;
+@@ -1392,14 +1400,20 @@ void __cdecl G_CheckReloadStatus()
+             }
+             else
+             {
+-                SV_GameSendServerCommand(-1, "openvictoryscreen");
++                // COOP: with a guest connected there is no victory menu (it would pause whoever opens it);
++                // the host moves on to the next map after a short pause and the guest follows
++                if (SV_CoopHostHasGuest())
++                    g_coopVictoryAtMs = Sys_Milliseconds() + 3000;
++                else if (!SV_CoopIsGuest())
++                    SV_GameSendServerCommand(-1, "openvictoryscreen");
+             }
+             level.cinematic[0] = 0;
+         }
+         else if (level.bMissionFailed)
+         {
+             level.bMissionFailed = 0;
+-            Cbuf_AddText(0, "loadgame_continue\n");
++            if (!SV_CoopIsGuest()) // COOP: the host's reload reaches the guest through the stream
++                Cbuf_AddText(0, "loadgame_continue\n");
+         }
+         else
+         {
+@@ -1412,7 +1426,8 @@ void __cdecl G_CheckReloadStatus()
+         if (!g_reloading->current.integer)
+             MyAssertHandler("c:\\trees\\cod3\\cod3src\\src\\game\\g_main.cpp", 1833, 0, "%s", "g_reloading->current.integer");
+         level.absoluteReloadDelayTime = 0;
+-        Cbuf_AddText(0, "loadgame_continue\n");
++        if (!SV_CoopIsGuest()) // COOP: a guest waits for the host's reload (it arrives in the stream)
++            Cbuf_AddText(0, "loadgame_continue\n");
+     }
+ }
+ 
+@@ -1647,6 +1662,13 @@ void __cdecl G_ClientDoPerFrameNotifies(gentity_s *ent)
+     if (!ent)
+         MyAssertHandler("c:\\trees\\cod3\\cod3src\\src\\game\\g_main.cpp", 2244, 0, "%s", "ent");
+     client = ent->client;
++    if (!client) // COOP: an in-use player slot without a client (seen after a checkpoint reload)
++    {
++        static int warned;
++        if (!warned++)
++            Com_Printf(CON_CHANNEL_SERVER, "COOP: entity %d is in use but has no client (eType %d)\n", ent->s.number, ent->s.eType);
++        return;
++    }
+     if (!client)
+         MyAssertHandler("c:\\trees\\cod3\\cod3src\\src\\game\\g_main.cpp", 2248, 0, "%s", "client");
+     weapon = client->ps.weapon;
+@@ -2339,7 +2361,15 @@ int __cdecl G_RunFrame(ServerFrameExtent extent, int timeCap)
+         PROF_SCOPED("update player");
+         G_UpdatePlayer(level.gentities);
+         G_UpdatePlayerTriggers(level.gentities);
++        // COOP: the other players set off triggers too (this used to be player 0 only)
++        for (int ci = 1; ci < level.maxclients; ci++)
++        {
++            gentity_s *pl = &g_entities[ci];
++            if (pl->r.inuse && pl->client && pl->sentient)
++                G_UpdatePlayerTriggers(pl);
++        }
+         G_CheckReloadStatus();
++        Coop_HordeFrame(); // COOP
+         iassert(!level.actorPredictDepth);
+         level.currentIndex = 1;
+     }
+diff --git a/src/game/g_main.h b/src/game/g_main.h
+index 2cd8d76..6a1a039 100644
+--- a/src/game/g_main.h
++++ b/src/game/g_main.h
+@@ -274,7 +274,7 @@ extern gentity_s g_entities[MAX_GENTITIES];
+ extern sentient_s g_sentients[33];
+ extern char g_nextMap[64];
+ extern level_locals_t level;
+-extern gclient_s g_clients[1];
++extern gclient_s g_clients[COOP_MAX_CLIENTS];
+ extern actor_s g_actors[32];
+ 
+ extern scr_vehicle_s s_vehicles[64];
+\ No newline at end of file
+diff --git a/src/game/g_save.cpp b/src/game/g_save.cpp
+index 152d524..99a6241 100644
+--- a/src/game/g_save.cpp
++++ b/src/game/g_save.cpp
+@@ -634,7 +634,7 @@ void __cdecl WriteField1(const saveField_t *field, const unsigned __int8 *base,
+         if (*(unsigned int *)v3)
+         {
+             v7 = (signed int)(*(unsigned int *)v3 - (unsigned int)level.clients) / 46104 + 1;
+-            if (v7 >= 2)
++            if (v7 > COOP_MAX_CLIENTS) // COOP: was >= 2 (one client)
+                 Com_Error(ERR_DROP, "WriteField1: client out of range (%i)", v7);
+             *(int *)v3 = v7;
+         }
+@@ -898,7 +898,7 @@ void __cdecl ReadField(const saveField_t *field, unsigned __int8 *base, SaveGame
+         break;
+     case SF_CLIENT:
+         v13 = (int)*(int*)v7;
+-        if (*(unsigned int *)v7 > 1 || (v14 = v13 == 0, v13 < 0))
++        if (*(unsigned int *)v7 > COOP_MAX_CLIENTS || (v14 = v13 == 0, v13 < 0)) // COOP: was > 1
+         {
+             Com_Error(ERR_DROP, "ReadField: client out of range (%i)", *v7);
+             v14 = v13 == 0;
+@@ -2021,7 +2021,7 @@ void __cdecl G_SaveMainState(bool savegame, SaveGame *save)
+             v28 = i;
+         }
+         i = ++v28;
+-    } while (v28 < 1);
++    } while (v28 < COOP_MAX_CLIENTS); // COOP: was < 1
+     i = -1;
+     SaveMemory_SaveWrite(&i, 4, save);
+ 
+@@ -2492,6 +2492,7 @@ void __cdecl G_LoadMainState(SaveGame *save)
+     SaveMemory_LoadRead(&level.bDrawCompassFriendlies, 4, save);
+     SaveMemory_LoadRead(&j, 4, save);
+     Dvar_SetInt(sv_gameskill, j);
++    SV_SetValuesFromSkill(); // COOP: the values derived from it (damage taken, ...) are not in the save; a guest must match the host
+     SaveMemory_LoadRead(&j, 4, save);
+     Dvar_SetInt(g_player_maxhealth, j);
+     Sentient_ReadGlob(save);
+@@ -2525,7 +2526,8 @@ void __cdecl G_LoadMainState(SaveGame *save)
+     v6 = 1;
+     level.lastFreeEnt = 0;
+     num_entities = level.num_entities;
+-    for (j = 1; v6 < num_entities; j = v6)
++    v6 = COOP_MAX_CLIENTS; // COOP: player slots stay reserved (were: only slot 0), never handed to other entities
++    for (j = v6; v6 < num_entities; j = v6)
+     {
+         v8 = v6;
+         if (!g_entities[v6].r.inuse)
+@@ -2553,14 +2555,18 @@ void __cdecl G_LoadMainState(SaveGame *save)
+ 
+     for (k = j; j >= 0; k = j)
+     {
+-        if (k > 1)
++        if (k >= COOP_MAX_CLIENTS) // COOP: was > 1
+         {
+             Com_Error(ERR_DROP, "G_LoadMainState: clientnum out of range");
+             k = j;
+         }
+         cl = &level.clients[k];
+         if (cl->pers.connected == CON_DISCONNECTED)
+-            Com_Error(ERR_DROP, "G_LoadMainState: client mis-match in savegame");
++        {
++            if (k == 0)
++                Com_Error(ERR_DROP, "G_LoadMainState: client mis-match in savegame");
++            cl->pers.connected = CON_CONNECTED; // COOP: extra players saved in a mid-mission snapshot
++        }
+         ReadClient(cl, save);
+         SaveMemory_LoadRead(&j, 4, save);
+     }
+diff --git a/src/game/g_utils.cpp b/src/game/g_utils.cpp
+index 48ba9d4..d2f8a9e 100644
+--- a/src/game/g_utils.cpp
++++ b/src/game/g_utils.cpp
+@@ -1764,7 +1764,7 @@ gentity_s *__cdecl G_Spawn()
+         }
+         e = &level.gentities[level.num_entities++];
+         //SV_LocateGameData(level.gentities, level.num_entities, sizeof(gentity_s), &level.clients->ps, 46104);
+-        SV_LocateGameData(level.gentities, level.num_entities, sizeof(gentity_s), &level.clients->ps, sizeof(playerState_s));
++        SV_LocateGameData(level.gentities, level.num_entities, sizeof(gentity_s), &level.clients->ps, sizeof(gclient_s)); // COOP: stride is the whole gclient
+     }
+     G_InitGentity(e);
+     return e;
+diff --git a/src/game/savedevice.h b/src/game/savedevice.h
+index f611ab3..b373571 100644
+--- a/src/game/savedevice.h
++++ b/src/game/savedevice.h
+@@ -11,6 +11,7 @@ static const char *CONSOLE_DEFAULT_SAVE_NAME = "savegame.svg";
+ void __cdecl Memcard_InitializeSystem(void);
+ void __cdecl SaveDevice_Init(void);
+ void __cdecl SV_DisplaySaveErrorUI(void);
++enum SaveType : __int32;
+ bool __cdecl BuildCleanSavePath(char *, unsigned int, char const *, enum SaveType);
+ bool __cdecl SaveDevice_IsAccessingDevice(void);
+ void __cdecl WriteSaveToDeviceCleanup(void);
+diff --git a/src/gfx_d3d/r_dvars.cpp b/src/gfx_d3d/r_dvars.cpp
+index b6c4a89..64ef7d7 100644
+--- a/src/gfx_d3d/r_dvars.cpp
++++ b/src/gfx_d3d/r_dvars.cpp
+@@ -440,7 +440,7 @@
+          Material_PreventOverrideTechniqueGeneration();
+  }
+ 
+- static void __cdecl R_WarnInitDvars()
++ static void __cdecl R_WarnInitDvars_Local()
+  {
+      DvarLimits min; // [esp+4h] [ebp-10h]
+ 
+@@ -1478,7 +1478,7 @@
+          (char *)"",
+          DVAR_ARCHIVE | DVAR_LATCH,
+          "Special resolution mode for the remote debugger");
+-     R_WarnInitDvars();
++     R_WarnInitDvars_Local();
+      prof_probe[0] = Dvar_RegisterEnum("prof_probe0", prof_enumNames, 0, DVAR_NOFLAG, "Profile probe");
+      prof_probe[1] = Dvar_RegisterEnum("prof_probe1", prof_enumNames, 0, DVAR_NOFLAG, "Profile probe");
+      prof_probe[2] = Dvar_RegisterEnum("prof_probe2", prof_enumNames, 0, DVAR_NOFLAG, "Profile probe");
+diff --git a/src/gfx_d3d/r_model_skin_sse.cpp b/src/gfx_d3d/r_model_skin_sse.cpp
+index 3689235..1b5b1c0 100644
+--- a/src/gfx_d3d/r_model_skin_sse.cpp
++++ b/src/gfx_d3d/r_model_skin_sse.cpp
+@@ -36,15 +36,15 @@
+ // ---------------------------------------------------------------------------
+ 
+ // blend weights are uint16 in [0, 65535]; 1/65536 normalizes them to [0, 1)
+-static const __m128 sse_weightScale = { { 1.0f / 65536.0f, 1.0f / 65536.0f, 1.0f / 65536.0f, 1.0f / 65536.0f } };
++static const __m128 sse_weightScale = { 1.0f / 65536.0f, 1.0f / 65536.0f, 1.0f / 65536.0f, 1.0f / 65536.0f };
+ 
+ // packed unit vectors decode as (packed - shift) / scale, encode as packed * scale + shift
+-static const __m128 sse_encodeShift = { { 127.0f, 127.0f, 127.0f, -192.0f } };
+-static const __m128 sse_encodeScale = { { 127.0f, 127.0f, 127.0f, 255.0f } };
++static const __m128 sse_encodeShift = { 127.0f, 127.0f, 127.0f, -192.0f };
++static const __m128 sse_encodeScale = { 127.0f, 127.0f, 127.0f, 255.0f };
+ 
+ // Black Ops binormal-sign normalization: keep xyz fully, keep only the sign bit of w, then OR in 1.0
+ static const __declspec(align(16)) unsigned int k_binormalSignMask[4] = { 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0x80000000u };
+-static const __m128 sse_wOne = { { 0.0f, 0.0f, 0.0f, 1.0f } };
++static const __m128 sse_wOne = { 0.0f, 0.0f, 0.0f, 1.0f };
+ 
+ // ---------------------------------------------------------------------------
+ // intrinsic helpers
+@@ -139,7 +139,7 @@ static __forceinline __m64 Sse_SkinVertex(const GfxPackedVertex *src, const uint
+ {
+     const __m128 *v = (const __m128 *)src;
+     __m128 position = LoadSkinPosition(v[0]);
+-    __m64 colorTexCoord = *(const __m64 *)&v[1].m128_u64[0];
++    __m64 colorTexCoord = *(const __m64 *)&((const unsigned long long *)&v[1])[0];
+ 
+     const DObjSkelMat *bone0 = BoneAt(boneMatrix, blend[0]);
+     __m128 pos0 = PackXyzW(TransformPoint(bone0, position), position);
+@@ -151,8 +151,8 @@ static __forceinline __m64 Sse_SkinVertex(const GfxPackedVertex *src, const uint
+         outPos = _mm_add_ps(outPos, _mm_mul_ps(DecodeWeight(blend[2 * w]), _mm_sub_ps(bonePos, pos0)));
+     }
+ 
+-    __m64 normalTangent = PackNormalTangent(SkinUnitVec(bone0, v[1].m128_u32[2]),
+-                                            SkinUnitVec(bone0, v[1].m128_u32[3]));
++    __m64 normalTangent = PackNormalTangent(SkinUnitVec(bone0, ((const unsigned int *)&v[1])[2]),
++                                            SkinUnitVec(bone0, ((const unsigned int *)&v[1])[3]));
+     _mm_stream_ps((float *)dst, outPos);
+     _mm_stream_pi(dst + 2, colorTexCoord);
+     _mm_stream_pi(dst + 3, normalTangent);
+@@ -168,7 +168,7 @@ static __forceinline void Sse_SkinVertexSimple(const GfxPackedVertex *src, const
+ {
+     const __m128 *v = (const __m128 *)src;
+     __m128 position = LoadSkinPosition(v[0]);
+-    __m64 colorTexCoord = *(const __m64 *)&v[1].m128_u64[0];
++    __m64 colorTexCoord = *(const __m64 *)&((const unsigned long long *)&v[1])[0];
+ 
+     const DObjSkelMat *bone0 = BoneAt(boneMatrix, blend[0]);
+     __m128 pos0 = PackXyzW(TransformPoint(bone0, position), position);
+@@ -191,11 +191,11 @@ static __forceinline __m64 Sse_SkinVertexRigid(const DObjSkelMat *bone, const Gf
+ {
+     const __m128 *v = (const __m128 *)src;
+     __m128 srcPos = v[0];
+-    __m64 colorTexCoord = *(const __m64 *)&v[1].m128_u64[0];
++    __m64 colorTexCoord = *(const __m64 *)&((const unsigned long long *)&v[1])[0];
+ 
+     __m128 outPos = PackXyzW(TransformPoint(bone, srcPos), srcPos);
+-    __m64 normalTangent = PackNormalTangent(SkinUnitVec(bone, v[1].m128_u32[2]),
+-                                            SkinUnitVec(bone, v[1].m128_u32[3]));
++    __m64 normalTangent = PackNormalTangent(SkinUnitVec(bone, ((const unsigned int *)&v[1])[2]),
++                                            SkinUnitVec(bone, ((const unsigned int *)&v[1])[3]));
+     _mm_stream_ps((float *)dst, outPos);
+     _mm_stream_pi(dst + 2, colorTexCoord);
+     _mm_stream_pi(dst + 3, normalTangent);
+@@ -207,7 +207,7 @@ static __forceinline void Sse_SkinVertexRigidSimple(const DObjSkelMat *bone, con
+ {
+     const __m128 *v = (const __m128 *)src;
+     __m128 srcPos = v[0];
+-    __m64 colorTexCoord = *(const __m64 *)&v[1].m128_u64[0];
++    __m64 colorTexCoord = *(const __m64 *)&((const unsigned long long *)&v[1])[0];
+ 
+     __m128 outPos = PackXyzW(TransformPoint(bone, srcPos), srcPos);
+     _mm_stream_ps((float *)dst, outPos);
+diff --git a/src/script/scr_yacc_structs.h b/src/script/scr_yacc_structs.h
+index 173d6f4..ce23fe5 100644
+--- a/src/script/scr_yacc_structs.h
++++ b/src/script/scr_yacc_structs.h
+@@ -8,7 +8,7 @@
+ #pragma optimize("", off)
+ 
+ /* YYTRANSLATE[YYLEX] -- Bison token number corresponding to YYLEX. */
+-static alignas(1) const char yytranslate[352] =
++alignas(1) static const char yytranslate[352] =
+ {
+ 	0,     2,     2,     2,     2,     2,     2,     2,     2,     2,
+ 	2,     2,     2,     2,     2,     2,     2,     2,     2,     2,
+@@ -47,7 +47,7 @@ static alignas(1) const char yytranslate[352] =
+ 	86,   87,    88,    89,    90, //,    91,
+ 	0, 0, 0, 0, 0, 0, 0 // LWSS: alignment
+ };
+-static alignas(2) const short yyr1[136] =
++alignas(2) static const short yyr1[136] =
+ {
+   0,  91,  91,  91,  91,  92,  92,  92,  92,  92,
+   92, 92,  92,  92,  92,  92,  92,  92,  92,  92,
+@@ -65,7 +65,7 @@ static alignas(2) const short yyr1[136] =
+   116,  117,  118,  118,
+   0, 0 // LWSS: alignment
+ };
+-static alignas(2) const short yyr2[136] =
++alignas(2) static const short yyr2[136] =
+ {
+   0,  3,  2,  2,  2,  1,  3,  3,  3,  3,
+   3,  3,  3,  3,  3,  3,  3,  3,  3,  3,
+@@ -86,7 +86,7 @@ static alignas(2) const short yyr2[136] =
+ /* YYDEFACT[STATE-NUM] -- Default reduction number in state STATE-NUM.
+    Performed when YYTABLE does not specify something else to do.  Zero
+    means the default is an error.  */
+-static alignas(2) const short yydefact[262] =
++alignas(2) static const short yydefact[262] =
+ {
+ 	0,    133,    0,    130,    64,    45,    46,    110,    114,     0,
+ 	0,      0,    0,      0,    41,    42,    69,      0,      0,    49,
+@@ -117,7 +117,7 @@ static alignas(2) const short yydefact[262] =
+ 	0, 0 // LWSS: alignment
+ };
+ /* YYDEFGOTO[NTERM-NUM].  */
+-static alignas(2) const short yydefgoto[30] =
++alignas(2) static const short yydefgoto[30] =
+ {
+ 	259,     57,     206,     42,     43,      44,     45,     46,     58,      59,
+ 	60,     141,      51,    245,    142,     143,     56,     61,     62,     222,
+@@ -128,7 +128,7 @@ static alignas(2) const short yydefgoto[30] =
+ 
+ /* YYPACT[STATE-NUM] -- Index in YYTABLE of the portion describing
+    STATE-NUM.  */
+-static alignas(2) const short yypact[] =
++alignas(2) static const short yypact[] =
+ {
+   -15,
+   -32768,
+@@ -431,7 +431,7 @@ const __int16 yypgoto[] =
+ /* YYTABLE[YYPACT[STATE-NUM]] -- What to do in state STATE-NUM.  If
+    positive, shift that token.  If negative, reduce the rule whose
+    number is the opposite.  If YYTABLE_NINF, syntax error.  */
+-static alignas(2) const short yytable[1348] =
++alignas(2) static const short yytable[1348] =
+ {
+ 	48,     130,     174,     -93,      47,      72,     231,      83,      72,      52,
+ 	113,      1,     105,       2,     177,     105,      49,     -31,      53,     -94,
+@@ -569,7 +569,7 @@ static alignas(2) const short yytable[1348] =
+ 	101,    102,      87,      88,      89,      90,      91,      92,      93,      94,
+ 	95,      96,      97,      98,      99,     100,     101,     102,
+ };
+-static alignas(2) const short yycheck[1348] =
++alignas(2) static const short yycheck[1348] =
+ {
+ 	2,      4,   104,    10,     2,     4,    10,    39,     4,     2,
+ 	48,    26,    11,    28,     4,    11,     2,     9,    68,    38,
+@@ -707,7 +707,7 @@ static alignas(2) const short yycheck[1348] =
+ 	29,    30,    15,    16,    17,    18,    19,    20,    21,    22,
+ 	23,    24,    25,    26,    27,    28,    29,    30,
+ };
+-static alignas(2) const short yy_accept[260] =
++alignas(2) static const short yy_accept[260] =
+ {
+ 	0,      0,     0,     0,     0,     0,     0,    95,    93,     1,
+ 	4,     33,    93,    93,    89,    32,    19,    11,    12,    30,
+@@ -738,7 +738,7 @@ static alignas(2) const short yy_accept[260] =
+ 	0, 0 // LWSS: alignment
+ };
+ 
+-const alignas(4) int yy_ec[256] =
++alignas(4) const int yy_ec[256] =
+ {
+   0,
+   1,
+@@ -1002,7 +1002,7 @@ const alignas(4) int yy_ec[256] =
+ 
+ 
+ 
+-static alignas(4) const int32_t yy_meta[60] =
++alignas(4) static const int32_t yy_meta[60] =
+ {
+ 	0,    1,    1,    2,    1,    1,    1,    1,    1,    1,
+ 	1,    1,    1,    1,    1,    1,    1,    1,    3,    1,
+@@ -1013,7 +1013,7 @@ static alignas(4) const int32_t yy_meta[60] =
+ 	0 // LWSS: alignment
+ };
+ 
+-static alignas(2) const short yy_base[268] =
++alignas(2) static const short yy_base[268] =
+ {
+ 	0,      431,    430,      0,    0,       56,     57,    432,    435,    435,
+ 	429,    408,     56,     45,    435,    407,     58,    435,    435,    406,
+@@ -1045,7 +1045,7 @@ static alignas(2) const short yy_base[268] =
+ 	0, 0 // LWSS: alignment
+ };
+ 
+-static alignas(2) const short yy_def[268] =
++alignas(2) static const short yy_def[268] =
+ {
+ 	0,      258,    258,    257,      3,    259,    259,    257,    257,    257,
+ 	257,    257,    260,    257,    257,    257,    257,    257,    257,    257,
+@@ -1077,7 +1077,7 @@ static alignas(2) const short yy_def[268] =
+ 	0, 0 // LWSS: alignment
+ };
+ 
+-static alignas(2) const short yy_nxt[496] =
++alignas(2) static const short yy_nxt[496] =
+ {
+ 	0,       8,    10,     9,    11,    12,    13,    14,    15,    16,
+ 	17,     18,    19,    20,    21,    22,    23,    24,    25,    26,
+@@ -1132,7 +1132,7 @@ static alignas(2) const short yy_nxt[496] =
+ 	0, 0 // LWSS: alignment
+ };
+ 
+-static alignas(2) const short yy_chk[494] =
++alignas(2) static const short yy_chk[494] =
+ {
+ 	0,        3,      3,      3,      3,      3,      3,      3,      3,      3,
+ 	3,        3,      3,      3,      3,      3,      3,      3,      3,      3,
+diff --git a/src/server/coop_names.h b/src/server/coop_names.h
+new file mode 100644
+index 0000000..7e04aa5
+--- /dev/null
++++ b/src/server/coop_names.h
+@@ -0,0 +1,9 @@
++// COOP: the callsigns a player can pick (no free text, so nobody can type something offensive).
++// Shared by the launcher (win32/win_coop_launcher.cpp, passes the index as +set coop_name N) and the
++// engine (server/sv_coop.cpp, sends the index over the network and shows the name in messages).
++#pragma once
++#define COOP_NAME_COUNT 16
++static const char *const kCoopNames[COOP_NAME_COUNT] = {
++    "Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf", "Hotel",
++    "India", "Juliet", "Kilo", "Lima", "Mike", "November", "Oscar", "Papa",
++};
+diff --git a/src/server/server.h b/src/server/server.h
+index 4f5b3ad..f0030a5 100644
+--- a/src/server/server.h
++++ b/src/server/server.h
+@@ -273,6 +273,19 @@ int __cdecl SV_HistoryIsNew(server_demo_history_t *history);
+ void __cdecl SV_ClearInfrequentTimeMarks(server_demo_history_t *history);
+ server_demo_history_t *__cdecl SV_DemoGetBuffer();
+ server_demo_history_t *__cdecl SV_GetMarkHistory(const char *name);
++
++// COOP: a snapshot of the running game plus the exact position in the recording, so a late guest can
++// start from "now" instead of replaying everything (see sv_demo.cpp / sv_coop.cpp)
++struct CoopSnapshot
++{
++    int time, randomSeed, nextFramePos, msgBit, msgReadcount, readType;
++    usercmd_s lastUsercmd;
++    unsigned char *save, *cm, *freeEnt; // malloc'd copies
++    int saveLen, cmLen, freeLen;
++};
++bool SV_CoopTakeSnapshot(CoopSnapshot *out);
++void SV_CoopFreeSnapshot(CoopSnapshot *s);
++bool SV_CoopInstallSnapshot(const CoopSnapshot *s);
+ int __cdecl SV_DemoSaveHistory(server_demo_history_t *history);
+ void __cdecl SV_DemoMark_f();
+ bool __cdecl SV_DemoRead(void *buffer, unsigned int len, _iobuf *file);
+diff --git a/src/server/sv_ccmds.cpp b/src/server/sv_ccmds.cpp
+index 2c3250f..f8ab1b2 100644
+--- a/src/server/sv_ccmds.cpp
++++ b/src/server/sv_ccmds.cpp
+@@ -1062,6 +1062,9 @@ void SV_Map_f()
+     ShowLoadErrorsSummary(mapname, com_errorPrintsCount);
+ }
+ 
++void __cdecl SV_CoopAddTestClient_f(); // COOP (sv_main.cpp)
++cmd_function_s SV_CoopAddTestClient_f_VAR;
++cmd_function_s SV_CoopAddTestClient_f_VAR_SERVER;
+ cmd_function_s SV_NextLevel_f_VAR;
+ cmd_function_s SV_NextLevel_f_VAR_SERVER;
+ cmd_function_s SV_SelectSaveDevice_f_VAR;
+@@ -1136,6 +1139,8 @@ void __cdecl SV_AddOperatorCommands()
+     if (!initialized_0)
+     {
+         initialized_0 = 1;
++        Cmd_AddCommandInternal("coop_addtestclient", Cbuf_AddServerText_f, &SV_CoopAddTestClient_f_VAR); // COOP
++        Cmd_AddServerCommandInternal("coop_addtestclient", SV_CoopAddTestClient_f, &SV_CoopAddTestClient_f_VAR_SERVER);
+         Cmd_AddCommandInternal("fast_restart", Cbuf_AddServerText_f, &SV_FastRestart_f_VAR);
+         Cmd_AddServerCommandInternal("fast_restart", SV_FastRestart_f, &SV_FastRestart_f_VAR_SERVER);
+         Cmd_AddCommandInternal("map_restart", Cbuf_AddServerText_f, &SV_MapRestart_f_VAR);
+diff --git a/src/server/sv_client.cpp b/src/server/sv_client.cpp
+index a2d77d7..2ad446c 100644
+--- a/src/server/sv_client.cpp
++++ b/src/server/sv_client.cpp
+@@ -10,13 +10,18 @@
+ #include "sv_public.h"
+ #include <EffectsCore/fx_system.h>
+ 
++extern int g_coopBodyEnt; // COOP (sv_coop.cpp)
++
+ void __cdecl SV_DirectConnect()
+ {
+     client_t *clients; // r31
+ 
+     Com_DPrintf(CON_CHANNEL_SERVER, "SVC_DirectConnect ()\n");
+     clients = svs.clients;
+-    memset(svs.clients, 0, sizeof(client_t));
++    // COOP: a new level starts with only the local player; drop extra slots left over
++    // from the previous level (their entity slots now hold unrelated data)
++    memset(svs.clients, 0, sizeof(client_t) * COOP_MAX_CLIENTS);
++    g_coopBodyEnt = -1; // COOP: player 0's body entity belongs to the previous level
+     clients->gentity = SV_GentityNum(0);
+     clients->netchan.outgoingSequence = 1;
+     SV_InitReliableCommandsForClient(clients);
+diff --git a/src/server/sv_coop.cpp b/src/server/sv_coop.cpp
+new file mode 100644
+index 0000000..2636d03
+--- /dev/null
++++ b/src/server/sv_coop.cpp
+@@ -0,0 +1,1972 @@
++// COOP: live replay streaming (spectator mode).
++//
++// The SP server records every nondeterministic input into sv.demo.msg (the replay system).
++// Host: streams that byte buffer to a guest over TCP after each server frame.
++// Guest: loads the same map, receives the stream and restarts the level in replay mode
++// (the replay_restart path), fast-forwards to the host's time, then follows live.
++// Because the engine is deterministic, the guest's simulation matches the host's exactly.
++//
++//   host : +set coop_host <port>          (e.g. 28970)
++//   guest: +set coop_connect <ip[:port]>  (+map <same map as host>)
++#include <script/scr_const.h>
++#include <winsock2.h>
++#include <windows.h>
++
++#include <universal/q_shared.h>
++#include "server.h"
++#include "sv_public.h"
++#include <game/g_local.h>
++#include <qcommon/cmd.h>
++#include "sv_game.h"
++#include <client/client.h>
++#include <qcommon/threads.h>
++#include <win32/win_local.h>
++#include <game/g_main.h>
++#include <game/game_public.h>
++#include <bgame/bg_local.h>
++#include <game/g_scr_main.h>
++#include <xanim/xanim.h>
++
++#include "coop_names.h"
++
++void SV_DemoRestart(); // sv_demo.cpp
++bool SV_CoopGetDemoSave(const unsigned char **data, int *len); // sv_demo.cpp
++bool SV_CoopSetDemoSave(const unsigned char *data, int len);   // sv_demo.cpp
++extern unsigned int g_coopRecordingGen;                        // sv_demo.cpp
++static unsigned int s_hostRecGen;                              // recording the guest is following
++
++#define COOP_DEFAULT_PORT 28970
++#define COOP_MAGIC 0x504F4F43 // 'COOP'
++#define COOP_MAX_PIECE (16 * 1024)
++#define COOP_MAX_LAG_MS 250    // guest fast-forwards when further behind than this
++#define COOP_TARGET_LAG_MS 100 // ...down to this (must stay > 2 frames)
++#define COOP_MAP_NAME 64
++#define COOP_RESET_PREFIX (COOP_MAP_NAME + 12) // reset payload = map name, this guest's player slot (int), kind (int), the host's callsign (int), then:
++#define COOP_RESET_START 0    // kind 0: the savegame the host's recording started from (replay from the start)
++#define COOP_RESET_SNAPSHOT 1 // kind 1: a CoopSnapHeader + three blobs: the game as it is now (late join)
++
++struct CoopSnapSlot
++{
++    int active;
++    int name;
++    usercmd_s lastUsercmd; // the replay decodes each player's input as a delta from the previous one
++};
++struct CoopSnapHeader
++{
++    int time, randomSeed, nextFramePos, msgBit, msgReadcount, readType;
++    int saveLen, cmLen, freeLen;
++    int bodyEnt; // entity drawn as player 0's body
++    usercmd_s lastUsercmd;
++    CoopSnapSlot slots[COOP_MAX_CLIENTS];
++};
++#define COOP_FRAME_PENDING (-0x7FFFFFFF) // piece is not the end of a frame
++#define COOP_FRAME_RESET (-0x7FFFFFFE)   // piece of a new recording's start savegame (offset/len within
++                                         // the save, hostTime = total size); what follows is the new recording
++#define COOP_CMD_MAGIC 0x31444D43 // 'CMD1' guest -> host: one usercmd
++
++// player callsigns (index into kCoopNames), known on every machine; -1 = none yet
++static int s_playerName[COOP_MAX_CLIENTS] = { -1, -1, -1, -1 };
++static const char *Coop_NameOf(int n)
++{
++    int i = (n >= 0 && n < COOP_MAX_CLIENTS) ? s_playerName[n] : -1;
++    return (i >= 0 && i < COOP_NAME_COUNT) ? kCoopNames[i] : "A player";
++}
++// on-screen line for everybody (same text as the script command iprintln)
++static void Coop_Announce(const char *text)
++{
++    SV_GameSendServerCommand(-1, va("gm \"%s\"", text));
++}
++
++#define COOP_HELLO_MAGIC 0x314C4548 // 'HEL1' guest -> host: first thing sent, carries the password hash
++
++struct CoopHello
++{
++    unsigned int magic;
++    unsigned int passwordHash; // FNV-1a of coop_password (0 = none). A deterrent, not real security.
++    int nameIndex;             // the callsign this guest picked (index into kCoopNames)
++};
++
++static unsigned int Coop_PasswordHash(const char *pw)
++{
++    if (!*pw)
++        return 0;
++    unsigned int h = 2166136261u;
++    for (; *pw; pw++)
++        h = (h ^ (unsigned char)*pw) * 16777619u;
++    return h ? h : 1;
++}
++
++struct CoopCmdPacket
++{
++    unsigned int magic;
++    usercmd_s cmd;
++};
++
++void SV_CoopSetNetCmd(int n, const usercmd_s *cmd); // extra players section
++
++struct CoopChunkHeader
++{
++    unsigned int magic;
++    int frameDone;   // host level.framePos after its frame finished
++    int hostTime;    // host level time (ms)
++    unsigned int offset;
++    unsigned int len;
++};
++
++static bool s_wsaReady;
++
++static void Coop_InitWinsock()
++{
++    if (!s_wsaReady)
++    {
++        WSADATA wsa;
++        WSAStartup(0x0202, &wsa);
++        s_wsaReady = true;
++    }
++}
++
++static const char *Coop_Dvar(const char *name)
++{
++    const dvar_s *d = Dvar_FindVar(name);
++    return d ? Dvar_DisplayableValue(d) : "";
++}
++
++static bool Coop_SendAll(SOCKET s, const void *data, int len)
++{
++    const char *p = (const char *)data;
++    while (len > 0)
++    {
++        int n = send(s, p, len, 0);
++        if (n <= 0)
++            return false;
++        p += n;
++        len -= n;
++    }
++    return true;
++}
++
++// ============================================================================ host
++// Up to COOP_MAX_CLIENTS-1 guests. Each connection has its own player slot (index+1), send position and
++// input buffer; they all get the same recording, each from its own position in it.
++#define COOP_MAX_GUESTS (COOP_MAX_CLIENTS - 1)
++struct CoopGuestConn
++{
++    bool used;
++    SOCKET sock;
++    int slot;              // player slot this guest drives (1..)
++    bool wantsJoin;        // connected, not yet given a player (waits for player 0 to stand on ground)
++    bool announceJoin;     // show "X joined" for this player's next join (not after a checkpoint reload)
++    int nameIndex;
++    unsigned int sentEnd;  // bytes [0, sentEnd) of the recording have been sent to this guest
++    unsigned int dirtyFrom; // lowest byte that may still change (partial bit byte)
++    unsigned char rx[4096];
++    int rxLen;
++    unsigned char *out;    // data waiting to be sent (a slow or paused guest must never block the host)
++    int outLen, outCap;
++};
++#define COOP_MAX_OUTQ (24 * 1024 * 1024) // a guest further behind than this is dropped
++static bool s_hostRelayAnnounced;
++static SOCKET s_listen = INVALID_SOCKET;
++static CoopGuestConn s_guests[COOP_MAX_GUESTS];
++static bool s_pendingAnnounce[COOP_MAX_CLIENTS]; // the queued join should say "X joined"
++static bool s_pendingLeave[COOP_MAX_CLIENTS]; // a guest's connection dropped: record + apply the leave inside a frame
++static unsigned char *s_hostMsgData;   // detects a new recording (level change / load)
++
++static void Coop_DropGuest(CoopGuestConn &c, const char *why)
++{
++    if (c.used)
++    {
++        Com_Printf(CON_CHANNEL_SERVER, "COOP-HOST: guest in slot %d dropped (%s)\n", c.slot, why);
++        closesocket(c.sock);
++        c.used = false;
++        c.sock = INVALID_SOCKET;
++        free(c.out);
++        c.out = 0;
++        c.outLen = c.outCap = 0;
++        s_pendingLeave[c.slot] = true;
++    }
++}
++
++static bool Coop_Queue(CoopGuestConn &c, const void *data, int len)
++{
++    if (c.outLen + len > COOP_MAX_OUTQ)
++    {
++        Coop_DropGuest(c, "too far behind (not reading)");
++        return false;
++    }
++    if (c.outLen + len > c.outCap)
++    {
++        int cap = c.outCap ? c.outCap : 65536;
++        while (cap < c.outLen + len)
++            cap *= 2;
++        c.out = (unsigned char *)realloc(c.out, cap);
++        c.outCap = cap;
++    }
++    memcpy(c.out + c.outLen, data, len);
++    c.outLen += len;
++    return true;
++}
++
++// send as much of the queue as the socket takes right now; never waits
++static bool Coop_Flush(CoopGuestConn &c)
++{
++    while (c.outLen > 0)
++    {
++        int n = send(c.sock, (const char *)c.out, c.outLen, 0);
++        if (n > 0)
++        {
++            memmove(c.out, c.out + n, c.outLen - n);
++            c.outLen -= n;
++            continue;
++        }
++        if (n < 0 && WSAGetLastError() == WSAEWOULDBLOCK)
++            return true;
++        Coop_DropGuest(c, "send failed");
++        return false;
++    }
++    return true;
++}
++
++// tell a guest which map the host is on, which player slot is theirs, and the savegame the host's
++// recording starts from (sent when the guest connects, and again whenever the host reloads a
++// checkpoint or changes level)
++static bool Coop_SendResetToGuest(CoopGuestConn &c)
++{
++    const unsigned char *save;
++    int saveLen;
++    if (!SV_CoopGetDemoSave(&save, &saveLen))
++    {
++        Coop_DropGuest(c, "new recording has no start savegame");
++        return false;
++    }
++    int total = COOP_RESET_PREFIX + saveLen;
++    unsigned char *payload = (unsigned char *)malloc(total);
++    memset(payload, 0, COOP_RESET_PREFIX);
++    I_strncpyz((char *)payload, Coop_Dvar("mapname"), COOP_MAP_NAME);
++    memcpy(payload + COOP_MAP_NAME, &c.slot, sizeof(int));
++    int kind = COOP_RESET_START;
++    memcpy(payload + COOP_MAP_NAME + 4, &kind, sizeof(int));
++    memcpy(payload + COOP_MAP_NAME + 8, &s_playerName[0], sizeof(int));
++    memcpy(payload + COOP_RESET_PREFIX, save, saveLen);
++    Com_Printf(CON_CHANNEL_SERVER, "COOP-HOST: sending '%s' + %d byte start savegame to the guest in slot %d\n", (char *)payload, saveLen, c.slot);
++    for (int off = 0; off < total;)
++    {
++        int piece = total - off > COOP_MAX_PIECE ? COOP_MAX_PIECE : total - off;
++        CoopChunkHeader h;
++        h.magic = COOP_MAGIC;
++        h.frameDone = COOP_FRAME_RESET;
++        h.hostTime = total;
++        h.offset = off;
++        h.len = piece;
++        if (!Coop_Queue(c, &h, sizeof(h)) || !Coop_Queue(c, payload + off, piece))
++        {
++            free(payload);
++            return false;
++        }
++        off += piece;
++    }
++    free(payload);
++    return Coop_Flush(c);
++}
++
++extern int g_coopBodyEnt;
++
++// a guest joining mid-mission: instead of replaying the whole recording, send the game as it is now
++// plus where we are in the recording, and stream from there. Falls back to the full replay if the
++// snapshot cannot be taken.
++static bool Coop_SendSnapshotToGuest(CoopGuestConn &c)
++{
++    CoopSnapshot snap;
++    if (!SV_CoopTakeSnapshot(&snap))
++    {
++        Com_Printf(CON_CHANNEL_SERVER, "COOP-HOST: snapshot failed, the guest will replay from the start\n");
++        return Coop_SendResetToGuest(c);
++    }
++    CoopSnapHeader hdr;
++    memset(&hdr, 0, sizeof(hdr));
++    hdr.time = snap.time;
++    hdr.randomSeed = snap.randomSeed;
++    hdr.nextFramePos = snap.nextFramePos;
++    hdr.msgBit = snap.msgBit;
++    hdr.msgReadcount = snap.msgReadcount;
++    hdr.readType = snap.readType;
++    hdr.saveLen = snap.saveLen;
++    hdr.cmLen = snap.cmLen;
++    hdr.freeLen = snap.freeLen;
++    hdr.bodyEnt = g_coopBodyEnt;
++    hdr.lastUsercmd = snap.lastUsercmd;
++    for (int n = 1; n < COOP_MAX_CLIENTS; n++)
++    {
++        hdr.slots[n].active = svs.clients[n].state == 1;
++        hdr.slots[n].name = s_playerName[n];
++        hdr.slots[n].lastUsercmd = svs.clients[n].lastUsercmd;
++    }
++    int total = COOP_RESET_PREFIX + (int)sizeof(hdr) + snap.saveLen + snap.cmLen + snap.freeLen;
++    unsigned char *payload = (unsigned char *)malloc(total);
++    memset(payload, 0, COOP_RESET_PREFIX);
++    I_strncpyz((char *)payload, Coop_Dvar("mapname"), COOP_MAP_NAME);
++    memcpy(payload + COOP_MAP_NAME, &c.slot, sizeof(int));
++    int kind = COOP_RESET_SNAPSHOT;
++    memcpy(payload + COOP_MAP_NAME + 4, &kind, sizeof(int));
++    memcpy(payload + COOP_MAP_NAME + 8, &s_playerName[0], sizeof(int));
++    unsigned char *w = payload + COOP_RESET_PREFIX;
++    memcpy(w, &hdr, sizeof(hdr)); w += sizeof(hdr);
++    memcpy(w, snap.save, snap.saveLen); w += snap.saveLen;
++    memcpy(w, snap.cm, snap.cmLen); w += snap.cmLen;
++    memcpy(w, snap.freeEnt, snap.freeLen);
++    Com_Printf(CON_CHANNEL_SERVER, "COOP-HOST: sending a snapshot of '%s' (%d bytes, frame %d) to the guest in slot %d\n", (char *)payload, total, snap.nextFramePos, c.slot);
++    for (int off = 0; off < total;)
++    {
++        int piece = total - off > COOP_MAX_PIECE ? COOP_MAX_PIECE : total - off;
++        CoopChunkHeader h;
++        h.magic = COOP_MAGIC;
++        h.frameDone = COOP_FRAME_RESET;
++        h.hostTime = total;
++        h.offset = off;
++        h.len = piece;
++        if (!Coop_Queue(c, &h, sizeof(h)) || !Coop_Queue(c, payload + off, piece))
++        {
++            free(payload);
++            SV_CoopFreeSnapshot(&snap);
++            return false;
++        }
++        off += piece;
++    }
++    free(payload);
++    // the live stream continues from the snapshot's position (a partly written byte is sent again)
++    c.sentEnd = snap.msgReadcount;
++    c.dirtyFrom = (snap.msgBit & 7) ? (unsigned int)(snap.msgBit >> 3) : (unsigned int)snap.msgReadcount;
++    SV_CoopFreeSnapshot(&snap);
++    return Coop_Flush(c);
++}
++
++// a new connection: password check, then slot + backlog
++// a free guest slot, or 0 when the game is full / at its chosen size
++static CoopGuestConn *Coop_FreeConn()
++{
++    CoopGuestConn *free_c = 0;
++    for (int i = 0; i < COOP_MAX_GUESTS; i++)
++        if (!s_guests[i].used)
++        {
++            free_c = &s_guests[i];
++            free_c->slot = i + 1;
++            break;
++        }
++    if (!free_c)
++        return 0; // full: further guests wait in the listen queue
++    // +set coop_maxplayers N (2..4): total players including the host
++    int maxPlayers = atoi(Coop_Dvar("coop_maxplayers"));
++    if (maxPlayers < 2 || maxPlayers > COOP_MAX_CLIENTS)
++        maxPlayers = COOP_MAX_CLIENTS;
++    int connected = 0;
++    for (int i = 0; i < COOP_MAX_GUESTS; i++)
++        connected += s_guests[i].used;
++    if (connected >= maxPlayers - 1)
++        return 0; // the game is at its chosen size
++    return free_c;
++}
++
++// a new guest connection (from the listen socket or from the relay): password check, then slot + backlog
++static void Coop_AdmitGuest(SOCKET g, CoopGuestConn *free_c)
++{
++    u_long nb = 0;
++    ioctlsocket(g, FIONBIO, &nb); // blocking sends: small chunks on a LAN
++    int one = 1;
++    setsockopt(g, IPPROTO_TCP, TCP_NODELAY, (const char *)&one, sizeof(one));
++    DWORD sendTimeout = 20000; // a stalled guest must not freeze the host (a level load takes a while)
++    setsockopt(g, SOL_SOCKET, SO_SNDTIMEO, (const char *)&sendTimeout, sizeof(sendTimeout));
++    // the guest's first message is its hello (password hash); wait a moment for it
++    DWORD rcvTimeout = 3000;
++    setsockopt(g, SOL_SOCKET, SO_RCVTIMEO, (const char *)&rcvTimeout, sizeof(rcvTimeout));
++    CoopHello hello;
++    int got = 0;
++    while (got < (int)sizeof(hello))
++    {
++        int n = recv(g, (char *)&hello + got, sizeof(hello) - got, 0);
++        if (n <= 0)
++            break;
++        got += n;
++    }
++    DWORD none = 0;
++    setsockopt(g, SOL_SOCKET, SO_RCVTIMEO, (const char *)&none, sizeof(none));
++    u_long nonblocking = 1;
++    ioctlsocket(g, FIONBIO, &nonblocking); // from here on a slow guest can never stall the host
++    unsigned int want = Coop_PasswordHash(Coop_Dvar("coop_password"));
++    if (got < (int)sizeof(hello) || hello.magic != COOP_HELLO_MAGIC || (want && hello.passwordHash != want))
++    {
++        Com_Printf(CON_CHANNEL_SERVER, "COOP-HOST: guest refused (%s)\n", got < (int)sizeof(hello) ? "no hello" : "wrong password");
++        closesocket(g);
++        return;
++    }
++    // the callsign: what the guest asked for, or the next free one if it is taken
++    {
++        int want = hello.nameIndex;
++        if (want < 0 || want >= COOP_NAME_COUNT)
++            want = 0;
++        for (int tries = 0; tries < COOP_NAME_COUNT; tries++, want = (want + 1) % COOP_NAME_COUNT)
++        {
++            bool taken = false;
++            for (int n = 0; n < COOP_MAX_CLIENTS; n++)
++                if (s_playerName[n] == want && (n == 0 || svs.clients[n].state == 1 || s_guests[n - 1].used))
++                    taken = true;
++            if (!taken)
++                break;
++        }
++        free_c->nameIndex = want;
++        s_playerName[free_c->slot] = want;
++    }
++    free_c->announceJoin = true;
++    free_c->used = true;
++    free_c->sock = g;
++    free_c->wantsJoin = true;
++    free_c->sentEnd = free_c->dirtyFrom = 0;
++    free_c->rxLen = 0;
++    free_c->outLen = 0;
++    // a long recording means the host is well into the mission: join from a snapshot, not from the start
++    bool lateJoin = sv.demo.msg.cursize > 150000 && atoi(Coop_Dvar("coop_nosnapshot")) == 0;
++    if (!(lateJoin ? Coop_SendSnapshotToGuest(*free_c) : Coop_SendResetToGuest(*free_c)))
++        return;
++    Com_Printf(CON_CHANNEL_SERVER, "COOP-HOST: guest connected as player %d, streaming %d bytes of backlog\n", free_c->slot, sv.demo.msg.cursize);
++}
++
++static void Coop_AcceptGuest()
++{
++    CoopGuestConn *c = Coop_FreeConn();
++    if (!c)
++        return;
++    SOCKET g = accept(s_listen, 0, 0);
++    if (g == INVALID_SOCKET)
++        return;
++    Coop_AdmitGuest(g, c);
++}
++
++// ---- relay (see kisak/relay/relay.py): both sides connect OUT to it and meet by room code
++// Connect to "host[:port]" (a name or an IP) within timeoutMs; the returned socket is blocking.
++static bool Coop_ConnectTcp(const char *spec, int defaultPort, int timeoutMs, SOCKET *out)
++{
++    char host[128];
++    int port = defaultPort;
++    I_strncpyz(host, spec, sizeof(host));
++    char *colon = strrchr(host, ':');
++    if (colon)
++    {
++        *colon = 0;
++        port = atoi(colon + 1);
++    }
++    Coop_InitWinsock();
++    sockaddr_in a = {};
++    a.sin_family = AF_INET;
++    a.sin_port = htons((u_short)port);
++    unsigned long ip = inet_addr(host);
++    if (ip == INADDR_NONE)
++    {
++        hostent *he = gethostbyname(host);
++        if (!he || he->h_addrtype != AF_INET || !he->h_addr_list[0])
++            return false;
++        memcpy(&a.sin_addr, he->h_addr_list[0], 4);
++    }
++    else
++        a.sin_addr.s_addr = ip;
++    SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
++    u_long nb = 1;
++    ioctlsocket(sock, FIONBIO, &nb);
++    if (connect(sock, (sockaddr *)&a, sizeof(a)) != 0 && WSAGetLastError() != WSAEWOULDBLOCK)
++    {
++        closesocket(sock);
++        return false;
++    }
++    fd_set wf;
++    FD_ZERO(&wf);
++    FD_SET(sock, &wf);
++    timeval tv = { timeoutMs / 1000, (timeoutMs % 1000) * 1000 };
++    int err = 0, len = sizeof(err);
++    if (select(0, 0, &wf, 0, &tv) <= 0 || getsockopt(sock, SOL_SOCKET, SO_ERROR, (char *)&err, &len) != 0 || err)
++    {
++        closesocket(sock);
++        return false;
++    }
++    nb = 0;
++    ioctlsocket(sock, FIONBIO, &nb);
++    int one = 1;
++    setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, (const char *)&one, sizeof(one));
++    *out = sock;
++    return true;
++}
++
++static SOCKET s_relayCtl = INVALID_SOCKET; // the host's control line to the relay
++static char s_room[16];                    // room code the relay gave us
++static char s_relayBuf[256];
++static int s_relayBufLen;
++static DWORD s_relayRetry, s_relayPing, s_nextRoomAnnounce;
++bool SV_CoopHostHasGuest(); // defined further down
++
++static void Coop_RelayClose(const char *why)
++{
++    if (s_relayCtl != INVALID_SOCKET)
++    {
++        Com_Printf(CON_CHANNEL_SERVER, "COOP-HOST: relay connection closed (%s)\n", why);
++        closesocket(s_relayCtl);
++        s_relayCtl = INVALID_SOCKET;
++    }
++    s_room[0] = 0;
++    s_relayBufLen = 0;
++}
++
++// host: keep a control line open to the relay and answer every "GUEST id" with a data connection
++static void Coop_RelayPump()
++{
++    // copy: Coop_Dvar hands out text from a small rotating scratch buffer that later calls overwrite
++    char relay[128];
++    I_strncpyz(relay, Coop_Dvar("coop_relay"), sizeof(relay));
++    DWORD now = GetTickCount();
++    if (s_relayCtl == INVALID_SOCKET)
++    {
++        if ((int)(now - s_relayRetry) < 0)
++            return;
++        s_relayRetry = now + 15000;
++        SOCKET c;
++        if (!Coop_ConnectTcp(relay, 28999, 2500, &c))
++        {
++            Com_Printf(CON_CHANNEL_SERVER, "COOP-HOST: cannot reach the relay at %s (will retry)\n", relay);
++            return;
++        }
++        // +set coop_roomname NAME asks for that room name (the relay refuses a taken one); else a random code
++        char hostLine[64];
++        char roomName[24];
++        I_strncpyz(roomName, Coop_Dvar("coop_roomname"), sizeof(roomName));
++        int hl = roomName[0] ? _snprintf(hostLine, sizeof(hostLine), "HOST %s\n", roomName) : _snprintf(hostLine, sizeof(hostLine), "HOST\n");
++        send(c, hostLine, hl, 0);
++        DWORD rcvTimeout = 3000;
++        setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, (const char *)&rcvTimeout, sizeof(rcvTimeout));
++        char line[64] = {};
++        int got = 0;
++        while (got < (int)sizeof(line) - 1)
++        {
++            int n = recv(c, line + got, 1, 0);
++            if (n <= 0 || line[got] == '\n')
++                break;
++            got += n;
++        }
++        DWORD none = 0;
++        setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, (const char *)&none, sizeof(none));
++        if (strncmp(line, "ROOM ", 5) != 0 || strlen(line) < 6)
++        {
++            for (char *e = line; *e; ++e)
++                if (*e == '\r' || *e == '\n')
++                    *e = 0;
++            Com_Printf(CON_CHANNEL_SERVER, "COOP-HOST: the relay refused us (%s)\n", line);
++            if (!strncmp(line, "ERR ", 4))
++                Coop_Announce(va("Relay: %s", line + 4)); // e.g. the room name is taken
++            closesocket(c);
++            return;
++        }
++        I_strncpyz(s_room, line + 5, sizeof(s_room));
++        for (char *r = s_room; *r; ++r)
++            if (*r == '\r' || *r == '\n')
++                *r = 0;
++        u_long nb = 1;
++        ioctlsocket(c, FIONBIO, &nb);
++        s_relayCtl = c;
++        s_relayPing = now + 20000;
++        Com_Printf(CON_CHANNEL_SERVER, "COOP-HOST: room code %s on relay %s\n", s_room, relay);
++        Dvar_SetFromString((dvar_s *)Dvar_FindVar("coop_room"), s_room);
++        if (FILE *f = fopen("coop_room.txt", "w"))
++        {
++            fprintf(f, "%s\n", s_room);
++            fclose(f);
++        }
++        Coop_Announce(va("Room code: %s", s_room));
++        s_nextRoomAnnounce = now + 30000;
++    }
++
++    // keep telling the host the room code until somebody has joined (a single message is easy to miss)
++    if (s_room[0] && !SV_CoopHostHasGuest() && (int)(now - s_nextRoomAnnounce) >= 0)
++    {
++        Coop_Announce(va("Room code: %s  (relay %s)", s_room, relay));
++        s_nextRoomAnnounce = now + 30000;
++    }
++
++    // control line: "GUEST <id>\n" for every guest that wants in
++    for (;;)
++    {
++        int n = recv(s_relayCtl, s_relayBuf + s_relayBufLen, (int)sizeof(s_relayBuf) - 1 - s_relayBufLen, 0);
++        if (n == 0)
++        {
++            Coop_RelayClose("the relay hung up");
++            return;
++        }
++        if (n < 0)
++        {
++            if (WSAGetLastError() != WSAEWOULDBLOCK)
++            {
++                Coop_RelayClose("read error");
++                return;
++            }
++            break;
++        }
++        s_relayBufLen += n;
++        s_relayBuf[s_relayBufLen] = 0;
++        char *nl;
++        while ((nl = strchr(s_relayBuf, '\n')) != 0)
++        {
++            *nl = 0;
++            char id[32] = {};
++            if (sscanf(s_relayBuf, "GUEST %31s", id) == 1)
++            {
++                CoopGuestConn *fc = Coop_FreeConn();
++                SOCKET d;
++                if (fc && Coop_ConnectTcp(relay, 28999, 3000, &d))
++                {
++                    char hello[96];
++                    int hl = _snprintf(hello, sizeof(hello), "DATA %s %s\n", s_room, id);
++                    send(d, hello, hl, 0);
++                    Coop_AdmitGuest(d, fc); // from here on an ordinary guest connection
++                }
++            }
++            int consumed = (int)(nl + 1 - s_relayBuf);
++            memmove(s_relayBuf, nl + 1, s_relayBufLen - consumed);
++            s_relayBufLen -= consumed;
++            s_relayBuf[s_relayBufLen] = 0;
++        }
++    }
++    if ((int)(now - s_relayPing) >= 0)
++    {
++        send(s_relayCtl, "P\n", 2, 0); // keeps the line from going idle
++        s_relayPing = now + 20000;
++    }
++}
++
++void SV_CoopHostFrame()
++{
++    int port = atoi(Coop_Dvar("coop_host"));
++    if (port <= 0)
++        return;
++    if (port == 1)
++        port = COOP_DEFAULT_PORT;
++
++    Coop_InitWinsock();
++    // +set coop_relay <host[:port]>: guests come in through the relay, nothing listens on this machine
++    bool relayMode = *Coop_Dvar("coop_relay") != 0;
++    if (relayMode && s_hostRelayAnnounced == false)
++    {
++        s_hostRelayAnnounced = true;
++        int hn = atoi(Coop_Dvar("coop_name"));
++        s_playerName[0] = (hn >= 0 && hn < COOP_NAME_COUNT) ? hn : 0;
++    }
++    if (!relayMode && s_listen == INVALID_SOCKET)
++    {
++        s_listen = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
++        sockaddr_in a = {};
++        a.sin_family = AF_INET;
++        // +set coop_bind local : listen on this machine only (for a relay/launcher that forwards guests in)
++        a.sin_addr.s_addr = !I_stricmp(Coop_Dvar("coop_bind"), "local") ? inet_addr("127.0.0.1") : INADDR_ANY;
++        a.sin_port = htons((u_short)port);
++        int yes = 1;
++        setsockopt(s_listen, SOL_SOCKET, SO_REUSEADDR, (const char *)&yes, sizeof(yes));
++        if (bind(s_listen, (sockaddr *)&a, sizeof(a)) || listen(s_listen, COOP_MAX_GUESTS))
++        {
++            Com_Printf(CON_CHANNEL_SERVER, "COOP-HOST: cannot listen on tcp %d (%d)\n", port, WSAGetLastError());
++            closesocket(s_listen);
++            s_listen = INVALID_SOCKET;
++            Dvar_SetFromString((dvar_s *)Dvar_FindVar("coop_host"), "0");
++            return;
++        }
++        {
++            int hn = atoi(Coop_Dvar("coop_name")); // +set coop_name N (launcher)
++            s_playerName[0] = (hn >= 0 && hn < COOP_NAME_COUNT) ? hn : 0;
++        }
++        u_long nb = 1;
++        ioctlsocket(s_listen, FIONBIO, &nb);
++        Com_Printf(CON_CHANNEL_SERVER, "COOP-HOST: listening on tcp %d%s (up to %d guests)\n", port,
++            !I_stricmp(Coop_Dvar("coop_bind"), "local") ? " (this machine only)" : "", COOP_MAX_GUESTS);
++    }
++
++    if (!sv.demo.recording || !sv.demo.msg.data)
++        return; // nothing to stream (e.g. during a replay)
++
++    // a checkpoint reload (or level load) started a new recording: every connected guest gets the new
++    // start savegame and is streamed from the beginning again. The reload cleared the extra player
++    // slots, so each guest is re-added like a fresh join.
++    if (g_coopRecordingGen != s_hostRecGen || sv.demo.msg.data != s_hostMsgData)
++    {
++        for (int i = 0; i < COOP_MAX_GUESTS; i++)
++        {
++            CoopGuestConn &c = s_guests[i];
++            if (!c.used)
++                continue;
++            if (!Coop_SendResetToGuest(c))
++                continue;
++            c.sentEnd = c.dirtyFrom = 0;
++            c.wantsJoin = true;
++            c.announceJoin = false; // they are not new, the level was just reloaded
++        }
++        s_hostRecGen = g_coopRecordingGen;
++        s_hostMsgData = sv.demo.msg.data;
++    }
++
++    if (relayMode)
++        Coop_RelayPump();
++    else
++        Coop_AcceptGuest();
++
++    for (int i = 0; i < COOP_MAX_GUESTS; i++)
++    {
++        CoopGuestConn &c = s_guests[i];
++        if (!c.used)
++            continue;
++
++        // guest input
++        u_long avail = 0;
++        while (c.used && ioctlsocket(c.sock, FIONREAD, &avail) == 0 && avail > 0)
++        {
++            int n = recv(c.sock, (char *)c.rx + c.rxLen, sizeof(c.rx) - c.rxLen, 0);
++            if (n <= 0)
++            {
++                Coop_DropGuest(c, "guest disconnected");
++                break;
++            }
++            c.rxLen += n;
++            int pos = 0;
++            while (c.rxLen - pos >= (int)sizeof(CoopCmdPacket))
++            {
++                CoopCmdPacket pkt;
++                memcpy(&pkt, c.rx + pos, sizeof(pkt));
++                pos += sizeof(pkt);
++                if (pkt.magic != COOP_CMD_MAGIC)
++                {
++                    Coop_DropGuest(c, "bad input stream");
++                    break;
++                }
++                SV_CoopSetNetCmd(c.slot, &pkt.cmd);
++            }
++            if (!c.used)
++                break;
++            memmove(c.rx, c.rx + pos, c.rxLen - pos);
++            c.rxLen -= pos;
++        }
++        if (!c.used)
++            continue;
++
++        if ((unsigned int)sv.demo.msg.cursize < c.sentEnd)
++            c.sentEnd = c.dirtyFrom = 0; // recording shrank without a new generation: stream it again
++        unsigned int from = c.sentEnd < c.dirtyFrom ? c.sentEnd : c.dirtyFrom;
++        unsigned int to = sv.demo.msg.cursize;
++
++        // split into pieces that fit the guest's receive buffer; only the last piece
++        // announces the finished frame, so the guest never runs ahead of the bytes
++        unsigned int off = from;
++        do
++        {
++            unsigned int piece = to - off;
++            if (piece > COOP_MAX_PIECE)
++                piece = COOP_MAX_PIECE;
++            CoopChunkHeader h;
++            h.magic = COOP_MAGIC;
++            h.frameDone = (off + piece == to) ? G_GetFramePos() : COOP_FRAME_PENDING;
++            h.hostTime = G_GetTime();
++            h.offset = off;
++            h.len = piece;
++            if (!Coop_Queue(c, &h, sizeof(h)) || (h.len && !Coop_Queue(c, sv.demo.msg.data + off, h.len)))
++                break;
++            off += piece;
++        } while (off < to);
++        if (!c.used || !Coop_Flush(c))
++            continue;
++        c.sentEnd = to;
++        // the bit writer ORs later bits into its current partial byte, so resend from it next time
++        c.dirtyFrom = (sv.demo.msg.bit & 7) ? (unsigned int)(sv.demo.msg.bit >> 3) : to;
++    }
++}
++
++// ============================================================================ guest
++enum CoopGuestState { GUEST_OFF, GUEST_WAIT_LEVEL, GUEST_FOLLOWING, GUEST_WAIT_MAP, GUEST_FAILED };
++static CoopGuestState s_gstate = GUEST_OFF;
++static SOCKET s_hostSock = INVALID_SOCKET;
++static char s_connectError[96]; // what the relay said when it refused us
++static unsigned char s_rx[64 * 1024];
++static int s_rxLen;
++static int s_hostFrameDone = -1;
++static int s_hostTime;
++static int s_hostBytes;
++
++// the host's new start savegame, being received piece by piece (checkpoint reload)
++static unsigned char *s_resetSave;
++static int s_resetSaveLen;
++static bool s_resetReady; // complete: the caller must restart the replay from it
++
++// read whatever arrived; apply complete chunks into sv.demo.msg.
++// Stops right after a complete reset savegame (s_resetReady): whatever follows belongs to the
++// new recording and must not be written over the replay that is still running.
++static bool Coop_GuestPoll()
++{
++    for (;;)
++    {
++        if (s_resetReady)
++            return true;
++        int pos = 0;
++        while (s_rxLen - pos >= (int)sizeof(CoopChunkHeader))
++        {
++            CoopChunkHeader h;
++            memcpy(&h, s_rx + pos, sizeof(h));
++            if (h.magic != COOP_MAGIC)
++            {
++                if (!strncmp((const char *)s_rx + pos, "ERR ", 4)) // the relay refused us
++                {
++                    I_strncpyz(s_connectError, (const char *)s_rx + pos + 4, sizeof(s_connectError));
++                    for (char *e = s_connectError; *e; ++e)
++                        if (*e == '\r' || *e == '\n')
++                            *e = 0;
++                }
++                Com_Printf(CON_CHANNEL_SERVER, "COOP-GUEST: bad stream\n");
++                return false;
++            }
++            if (s_rxLen - pos < (int)(sizeof(h) + h.len))
++                break;
++            if (h.frameDone == COOP_FRAME_RESET)
++            {
++                if (h.offset == 0)
++                {
++                    free(s_resetSave);
++                    s_resetSave = (unsigned char *)malloc(h.hostTime);
++                    s_resetSaveLen = h.hostTime;
++                }
++                if (!s_resetSave || h.offset + h.len > (unsigned int)s_resetSaveLen)
++                {
++                    Com_Printf(CON_CHANNEL_SERVER, "COOP-GUEST: bad start savegame piece\n");
++                    return false;
++                }
++                memcpy(s_resetSave + h.offset, s_rx + pos + sizeof(h), h.len);
++                pos += sizeof(h) + h.len;
++                if ((int)(h.offset + h.len) == s_resetSaveLen)
++                {
++                    s_resetReady = true;
++                    break;
++                }
++                continue;
++            }
++            if (h.offset + h.len > (unsigned int)sv.demo.msg.maxsize)
++            {
++                Com_Printf(CON_CHANNEL_SERVER, "COOP-GUEST: stream exceeds replay buffer\n");
++                return false;
++            }
++            memcpy(sv.demo.msg.data + h.offset, s_rx + pos + sizeof(h), h.len);
++            if ((int)(h.offset + h.len) > sv.demo.msg.cursize)
++                sv.demo.msg.cursize = h.offset + h.len;
++            if (h.frameDone != COOP_FRAME_PENDING)
++            {
++                s_hostFrameDone = h.frameDone;
++                s_hostTime = h.hostTime;
++            }
++            s_hostBytes = h.offset + h.len;
++            pos += sizeof(h) + h.len;
++        }
++        memmove(s_rx, s_rx + pos, s_rxLen - pos);
++        s_rxLen -= pos;
++        if (s_resetReady)
++            return true;
++        if (s_rxLen == sizeof(s_rx))
++            return false; // chunk larger than buffer
++
++        int n = recv(s_hostSock, (char *)s_rx + s_rxLen, sizeof(s_rx) - s_rxLen, 0);
++        if (n == 0)
++            return false;
++        if (n < 0)
++            break; // WSAEWOULDBLOCK or error; checked below
++        s_rxLen += n;
++    }
++    return WSAGetLastError() == WSAEWOULDBLOCK;
++}
++
++static bool Coop_GuestConnect(const char *target)
++{
++    const char *at = strchr(target, '@');
++    if (at)
++    {
++        // "ROOMCODE@relay-address[:port]": meet the host through the relay (see kisak/relay/relay.py)
++        char code[32] = {};
++        int cl = (int)(at - target);
++        if (cl <= 0 || cl >= (int)sizeof(code))
++        {
++            Com_Printf(CON_CHANNEL_SERVER, "COOP-GUEST: bad room code in '%s'\n", target);
++            return false;
++        }
++        memcpy(code, target, cl);
++        for (char *c = code; *c; ++c)
++            *c = (char)toupper((unsigned char)*c);
++        if (!Coop_ConnectTcp(at + 1, 28999, 5000, &s_hostSock))
++        {
++            s_hostSock = INVALID_SOCKET;
++            Com_Printf(CON_CHANNEL_SERVER, "COOP-GUEST: cannot reach the relay at %s\n", at + 1);
++            return false;
++        }
++        char join[64];
++        int jl = _snprintf(join, sizeof(join), "JOIN %s\n", code);
++        send(s_hostSock, join, jl, 0);
++    }
++    else
++    {
++    char ip[64];
++    int port = COOP_DEFAULT_PORT;
++    I_strncpyz(ip, target, sizeof(ip));
++    char *colon = strchr(ip, ':');
++    if (colon)
++    {
++        *colon = 0;
++        port = atoi(colon + 1);
++    }
++    Coop_InitWinsock();
++    s_hostSock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
++    sockaddr_in a = {};
++    a.sin_family = AF_INET;
++    a.sin_addr.s_addr = inet_addr(ip);
++    a.sin_port = htons((u_short)port);
++    if (connect(s_hostSock, (sockaddr *)&a, sizeof(a)))
++    {
++        Com_Printf(CON_CHANNEL_SERVER, "COOP-GUEST: cannot connect to %s:%d (%d)\n", ip, port, WSAGetLastError());
++        closesocket(s_hostSock);
++        s_hostSock = INVALID_SOCKET;
++        return false;
++    }
++    }
++    u_long nb = 1;
++    ioctlsocket(s_hostSock, FIONBIO, &nb);
++    int myName = atoi(Coop_Dvar("coop_name"));
++    CoopHello hello = { COOP_HELLO_MAGIC, Coop_PasswordHash(Coop_Dvar("coop_password")), (myName >= 0 && myName < COOP_NAME_COUNT) ? myName : 0 };
++    send(s_hostSock, (const char *)&hello, sizeof(hello), 0);
++    Com_Printf(CON_CHANNEL_SERVER, "COOP-GUEST: connected to %s\n", target);
++    return true;
++}
++
++// the host reloaded a checkpoint: restart our replay from its start savegame, then follow the
++// new recording. The old replay is dropped (its last ~100 ms are gone with the old timeline).
++static unsigned int s_waitMapGen; // recording count when the map change was requested
++static int s_resetKind;           // kind of the reset being applied (start savegame / snapshot)
++static struct { int active[COOP_MAX_CLIENTS]; int name[COOP_MAX_CLIENTS]; usercmd_s cmd[COOP_MAX_CLIENTS]; int bodyEnt; } s_snapFix;
++static bool s_snapFixPending;      // after a snapshot restart: restore the per-player details once the level is up
++static int s_mySlot = 1;          // the player slot the host gave this guest
++
++// second half: the right map is loaded; restart the replay from the host's start savegame
++static bool Coop_GuestFinishReset()
++{
++    while (s_resetReady)
++    {
++        s_resetReady = false;
++        memcpy(&s_resetKind, s_resetSave + COOP_MAP_NAME + 4, sizeof(int));
++        if (s_resetKind == COOP_RESET_SNAPSHOT)
++        {
++            CoopSnapHeader hdr;
++            memcpy(&hdr, s_resetSave + COOP_RESET_PREFIX, sizeof(hdr));
++            const unsigned char *r = s_resetSave + COOP_RESET_PREFIX + sizeof(hdr);
++            CoopSnapshot snap;
++            memset(&snap, 0, sizeof(snap));
++            snap.time = hdr.time; snap.randomSeed = hdr.randomSeed; snap.nextFramePos = hdr.nextFramePos;
++            snap.msgBit = hdr.msgBit; snap.msgReadcount = hdr.msgReadcount; snap.readType = hdr.readType;
++            snap.lastUsercmd = hdr.lastUsercmd;
++            snap.saveLen = hdr.saveLen; snap.cmLen = hdr.cmLen; snap.freeLen = hdr.freeLen;
++            snap.save = (unsigned char *)r;
++            snap.cm = (unsigned char *)r + hdr.saveLen;
++            snap.freeEnt = (unsigned char *)r + hdr.saveLen + hdr.cmLen;
++            SV_CoopInstallSnapshot(&snap); // copies
++            for (int n = 0; n < COOP_MAX_CLIENTS; n++)
++            {
++                s_snapFix.active[n] = hdr.slots[n].active;
++                s_snapFix.name[n] = hdr.slots[n].name;
++                s_snapFix.cmd[n] = hdr.slots[n].lastUsercmd;
++            }
++            s_snapFix.bodyEnt = hdr.bodyEnt;
++            s_snapFixPending = true;
++        }
++        else if (!SV_CoopSetDemoSave(s_resetSave + COOP_RESET_PREFIX, s_resetSaveLen - COOP_RESET_PREFIX))
++        {
++            Com_Printf(CON_CHANNEL_SERVER, "COOP-GUEST: cannot store the host's start savegame\n");
++            return false;
++        }
++        sv.demo.msg.cursize = 0;
++        s_hostFrameDone = -1;
++        int start = Sys_Milliseconds();
++        while (s_hostFrameDone < 2 && !s_resetReady && Sys_Milliseconds() - start < 10000)
++        {
++            if (!Coop_GuestPoll())
++                return false;
++            Sleep(1);
++        }
++        if (s_resetReady)
++            continue; // the host reloaded again meanwhile
++        if (s_hostFrameDone < 2)
++        {
++            Com_Printf(CON_CHANNEL_SERVER, "COOP-GUEST: no stream after the host's reload\n");
++            return false;
++        }
++    }
++    Com_Printf(CON_CHANNEL_SERVER, "COOP-GUEST: host sent a %s (%d bytes); restarting replay from it, host time %d ms\n",
++        s_resetKind == COOP_RESET_SNAPSHOT ? "snapshot" : "start savegame", s_resetSaveLen - COOP_RESET_PREFIX, s_hostTime);
++    if (s_resetKind != COOP_RESET_SNAPSHOT)
++    {
++        sv.demo.nextLevelSave = 0;
++        sv.demo.nextLevelTime = s_hostTime;
++    }
++    SV_DemoRestart();
++    s_gstate = GUEST_FOLLOWING;
++    return true;
++}
++
++// the host reloaded a checkpoint or changed level: if it is another map, load that first
++static bool Coop_GuestApplyReset()
++{
++    const char *hostMap = (const char *)s_resetSave;
++    memcpy(&s_mySlot, s_resetSave + COOP_MAP_NAME, sizeof(int)); // which player this guest is
++    memcpy(&s_playerName[0], s_resetSave + COOP_MAP_NAME + 8, sizeof(int)); // and what the host is called
++    if (s_mySlot < 1 || s_mySlot >= COOP_MAX_CLIENTS)
++        s_mySlot = 1;
++    if (I_stricmp(hostMap, Coop_Dvar("mapname")))
++    {
++        Com_Printf(CON_CHANNEL_SERVER, "COOP-GUEST: host moved to map '%s' (we are on '%s'); loading it\n", hostMap, Coop_Dvar("mapname"));
++        s_waitMapGen = g_coopRecordingGen;
++        s_gstate = GUEST_WAIT_MAP;
++        Cbuf_AddText(0, va("spmap %s\n", hostMap));
++        return true; // the reset stays pending until the new level is up
++    }
++    return Coop_GuestFinishReset();
++}
++
++static void Coop_ApplySnapshotFix(); // defined with the player bodies, further down
++
++static void Coop_GuestFail(const char *why)
++{
++    Com_Printf(CON_CHANNEL_SERVER, "COOP-GUEST: %s\n", why);
++    closesocket(s_hostSock);
++    s_hostSock = INVALID_SOCKET;
++    s_gstate = GUEST_FAILED;
++}
++
++// called before every G_RunFrame on the server thread
++void SV_CoopGuestFrame()
++{
++    char target[160]; // copy (see Coop_RelayPump): the scratch buffer behind Coop_Dvar gets reused
++    I_strncpyz(target, Coop_Dvar("coop_connect"), sizeof(target));
++    if (!*target || s_gstate == GUEST_FAILED)
++        return;
++
++    if (s_gstate == GUEST_OFF)
++        s_gstate = GUEST_WAIT_LEVEL;
++
++    if (s_gstate == GUEST_WAIT_LEVEL)
++    {
++        // wait for our own copy of the level to be up, then take over its replay buffer
++        if (!sv.demo.recording || !sv.demo.msg.data || G_GetTime() < 1000)
++            return;
++        if (!Coop_GuestConnect(target))
++        {
++            s_gstate = GUEST_FAILED;
++            // visible to the player instead of silently playing alone
++            Com_Error(ERR_DROP, "Could not connect to the host at %s. Check the address and that the host has started the game.", target);
++            return;
++        }
++        // the host's first message says which map it is on and which savegame its recording started
++        // from; the same path as after a host checkpoint reload / level change then takes over
++        s_resetReady = false;
++        int start = Sys_Milliseconds();
++        while (!s_resetReady && Sys_Milliseconds() - start < 10000)
++        {
++            if (!Coop_GuestPoll())
++                break;
++            Sleep(1);
++        }
++        if (!s_resetReady)
++        {
++            Com_Printf(CON_CHANNEL_SERVER, "COOP-GUEST: no stream from host\n");
++            s_gstate = GUEST_FAILED;
++            if (s_connectError[0])
++                Com_Error(ERR_DROP, "The relay said: %s", s_connectError);
++            Com_Error(ERR_DROP, "The host did not let you in. Check the password, and that the host has started the mission.");
++            return;
++        }
++        s_gstate = GUEST_FOLLOWING; // FinishReset / the map change below manage the state from here
++        if (!Coop_GuestApplyReset())
++            Coop_GuestFail("could not follow the host");
++        return;
++    }
++
++    if (s_gstate == GUEST_WAIT_MAP)
++    {
++        // our new level has started recording: take over its replay buffer and follow the host
++        if (g_coopRecordingGen == s_waitMapGen || !sv.demo.recording || !sv.demo.msg.data)
++            return;
++        s_resetReady = true; // the savegame we stored is still in s_resetSave
++        if (!Coop_GuestFinishReset())
++            Coop_GuestFail("could not follow the host to its new map");
++        return;
++    }
++
++    // GUEST_FOLLOWING
++    // Keep reading the host even when no replay is running: the old recording ends with an end
++    // marker (the replay stops right there) and the host's reload only arrives after it.
++    if (!Coop_GuestPoll())
++    {
++        Coop_GuestFail("host connection lost");
++        return;
++    }
++    if (s_resetReady)
++    {
++        if (!Coop_GuestApplyReset())
++            Coop_GuestFail("could not follow the host's reload");
++        return;
++    }
++    if (!sv.demo.playing)
++        return; // restart pending, or the replay ended (waiting for the host's reload)
++    if (s_snapFixPending)
++        Coop_ApplySnapshotFix();
++    // send every input command the local client built since last frame (each carries its own
++    // serverTime); the host runs them all in order, so our prediction matches its result
++    {
++        static int lastSent = -1;
++        CoopCmdPacket pkts[64];
++        int count = 0;
++        Sys_EnterCriticalSection(CRITSECT_CLIENT_CMD);
++        int newest = clients[0].cmdNumber;
++        if (lastSent < 0 || newest - lastSent > 63)
++            lastSent = newest - 1;
++        for (int c = lastSent + 1; c <= newest; c++)
++        {
++            pkts[count].magic = COOP_CMD_MAGIC;
++            pkts[count].cmd = clients[0].cmds[c & 63];
++            count++;
++        }
++        Sys_LeaveCriticalSection(CRITSECT_CLIENT_CMD);
++        lastSent = newest;
++        if (count)
++            send(s_hostSock, (const char *)pkts, count * sizeof(CoopCmdPacket), 0);
++    }
++
++    // catch up: a guest that fell behind (join, load hitch) fast-forwards with rendering off
++    int lag = s_hostTime - G_GetTime();
++    if (lag > COOP_MAX_LAG_MS && !sv.demo.forwardMsec)
++    {
++        int skip = (lag - COOP_TARGET_LAG_MS) / 50 * 50;
++        Com_Printf(CON_CHANNEL_SERVER, "COOP-GUEST: %d ms behind host, fast-forwarding %d ms\n", lag, skip);
++        CL_SetSkipRendering(1);
++        sv.demo.forwardMsec = skip;
++    }
++
++    // frame N = framePos+1 reads ahead into frame N+1, so the host must have finished N+1
++    int need = G_GetFramePos() + 2;
++    int start = Sys_Milliseconds();
++    while (s_hostFrameDone < need)
++    {
++        if (!Coop_GuestPoll())
++            return; // handled next frame
++        if (s_resetReady)
++        {
++            if (!Coop_GuestApplyReset())
++                Coop_GuestFail("could not follow the host's reload");
++            return;
++        }
++        if (Sys_Milliseconds() - start > 5000)
++        {
++            Com_Printf(CON_CHANNEL_SERVER, "COOP-GUEST: waiting on host (have frame %d, need %d)\n", s_hostFrameDone, need);
++            start = Sys_Milliseconds();
++        }
++        Sleep(1);
++    }
++}
++
++// ============================================================================ extra players
++// Players 1..COOP_MAX_CLIENTS-1 are recorded into the replay stream so every machine runs them
++// identically:  type 12 = player joins  [long framePos][byte n]
++//               type 11 = player input  [long framePos][byte n][delta usercmd vs lastUsercmd]
++// Host: written + executed in SV_CoopUpdateExtraPlayers (right after player 0's input, inside
++// G_UpdatePlayer). Guest: read + executed by the replay reader at the same frame.
++#define COOP_DEMO_PLAYERCMD 11
++#define COOP_DEMO_JOIN 12
++#define COOP_DEMO_LEAVE 13 // player n left: removed at the same frame on every machine
++
++void SV_CheckDemoSize();        // sv_demo.cpp
++void SV_ReadNextDemoType();     // sv_demo.cpp
++
++static bool s_pendingJoin[COOP_MAX_CLIENTS];
++static usercmd_s s_netCmd[COOP_MAX_CLIENTS]; // idle input for local test clients
++// network players: every received command, run in order by the next host frame
++#define COOP_CMD_QUEUE 256
++static usercmd_s s_cmdQueue[COOP_MAX_CLIENTS][COOP_CMD_QUEUE];
++static int s_cmdHead[COOP_MAX_CLIENTS], s_cmdTail[COOP_MAX_CLIENTS];
++static bool s_isNetPlayer[COOP_MAX_CLIENTS];
++
++extern int g_coopBodyEnt;
++static void Coop_PlacePlayer(int n);
++static void Coop_GiveBody(int n);
++
++// a level (re)load wipes every entity: forget the extra players, they are re-added by a join
++// item (a checkpoint load does not go through SV_DirectConnect, which used to do this)
++void SV_CoopLevelReset()
++{
++    for (int n = 1; n < COOP_MAX_CLIENTS; n++)
++    {
++        memset(&svs.clients[n], 0, sizeof(client_t));
++        s_pendingJoin[n] = false;
++        s_cmdHead[n] = s_cmdTail[n] = 0;
++    }
++    g_coopBodyEnt = -1;
++}
++
++static bool Coop_IsAlive(int n)
++{
++    if (svs.clients[n].state != 1)
++        return false;
++    const gclient_s *c = level.clients + n;
++    return c->ps.pm_type < PM_DEAD && SV_GentityNum(n)->health > 0;
++}
++
++// the first living player other than n (player 0 first), or -1 when nobody else is alive
++static int Coop_LivingOther(int n)
++{
++    for (int i = 0; i < COOP_MAX_CLIENTS; i++)
++    {
++        if (i != n && Coop_IsAlive(i))
++            return i;
++    }
++    return -1;
++}
++
++// who a (re)spawning player appears next to: a living partner (player 0 falls back to itself)
++static int Coop_AnchorFor(int n)
++{
++    int a = Coop_LivingOther(n);
++    return a >= 0 ? a : 0;
++}
++
++// co-op death rule (called from respawn(), same frame on every machine), the same for every player:
++// respawn beside a living partner; when nobody else is alive the whole team is down, and the normal
++// SP checkpoint reload happens (the host triggers it, guests follow through the stream).
++// Playing alone nobody else is alive, so this is exactly the original single-player behaviour.
++bool SV_CoopShouldRespawn(gentity_s *ent)
++{
++    if (atoi(Coop_Dvar("coop_nomercy"))) // test switch (host console): any death reloads the checkpoint
++        return false;
++    return Coop_LivingOther(ent->s.number) >= 0;
++}
++
++static void Coop_SpawnPlayer(int n)
++{
++    client_t *cl = &svs.clients[n];
++    memset(cl, 0, sizeof(*cl));
++    cl->gentity = SV_GentityNum(n);
++    cl->state = 1;
++    cl->lastUsercmd.serverTime = G_GetTime();
++    memset(&s_netCmd[n], 0, sizeof(s_netCmd[n]));
++    s_cmdHead[n] = s_cmdTail[n] = 0;
++
++    ClientConnect(n);
++    ClientBegin(n);
++    Coop_PlacePlayer(n);
++    Coop_GiveBody(n);
++    Coop_GiveBody(0); // a partner joined: the host needs a body too (does nothing if it has one)
++}
++
++#define COOP_PLAYER_BODY "body_complete_sp_sas_ct_benjamin"
++
++// Models can only be registered while a level initializes, so a body/weapon model must be one
++// the current map's scripts already loaded (cargoship has the sas_ct body, other maps do not).
++// Same configstring scan as G_ModelIndex, but without erroring when the model is missing.
++static const char *Coop_PrecachedModel(const char *wanted, const char *prefix)
++{
++    const char *firstPrefixMatch = 0;
++    for (int i = 1; i < 512; i++)
++    {
++        unsigned int cs = SV_GetConfigstringConst(i + 1123); // CS_MODELS (PC SP)
++        if (cs == scr_const._)
++            break;
++        const char *name = SL_ConvertToString(cs);
++        if (wanted && !I_stricmp(name, wanted))
++            return name;
++        if (prefix && !firstPrefixMatch && !I_strnicmp(name, prefix, (int)strlen(prefix)))
++            firstPrefixMatch = name;
++    }
++    return firstPrefixMatch;
++}
++
++static const char *Coop_Dvar(const char *name); // defined above
++
++static const char *Coop_BodyModel()
++{
++    // console override for experimenting: coop_body_model <name>
++    char want[96];
++    I_strncpyz(want, Coop_Dvar("coop_body_model"), sizeof(want));
++    if (*want)
++    {
++        const char *m = Coop_PrecachedModel(want, 0);
++        if (m)
++            return m;
++    }
++    // the usual soldier body if this map has it, else any full body model the map loaded
++    const char *m = Coop_PrecachedModel(COOP_PLAYER_BODY, "body_complete");
++    if (!m)
++        m = Coop_PrecachedModel(0, "body_");
++    static const char *lastLogged;
++    if (m && m != lastLogged)
++    {
++        lastLogged = m;
++        Com_Printf(CON_CHANNEL_SERVER, "COOP: player body model is '%s'\n", m);
++    }
++    return m;
++}
++
++// phase 3: give a player entity a third-person body so other machines can draw it
++// (server-side model + skeleton; the client copies the skeleton like for any script model)
++static int s_curAnim[COOP_MAX_CLIENTS];
++int g_coopBodyEnt = -1; // entity drawn as player 0's body (read by cgame, same process)
++float g_coopPlayerLean[64]; // lean (Q/E) of each drawn body, keyed by its entity number (read by cgame)
++
++// Player 0 is special-cased all over SP code and its anim weights get reset every frame, so its
++// visible body is a separate non-solid entity that follows it (created at the same frame on
++// every machine, so its entity number matches).
++static gentity_s *Coop_BodyEntFor(int n)
++{
++    if (n != 0)
++        return SV_GentityNum(n);
++    return g_coopBodyEnt >= 0 ? SV_GentityNum(g_coopBodyEnt) : 0;
++}
++
++static void Coop_GiveBody(int n)
++{
++    if (n == 0)
++    {
++        if (g_coopBodyEnt >= 0 && SV_GentityNum(g_coopBodyEnt)->r.inuse)
++            return;
++        gentity_s *body = G_Spawn();
++        body->s.eType = ET_GENERAL;
++        body->r.contents = 0; // shots and collisions belong to the real player
++        body->pAnimTree = Com_XAnimCreateSmallTree(g_scr_data.generic_human.tree.anims);
++        const char *bodyModel = Coop_BodyModel();
++        if (!bodyModel)
++        {
++            Com_Printf(CON_CHANNEL_SERVER, "COOP: this map has no body model to show players\n");
++            G_FreeEntity(body);
++            return;
++        }
++        G_SetModel(body, bodyModel);
++        G_DObjUpdate(body);
++        G_SetOrigin(body, SV_GentityNum(0)->r.currentOrigin);
++        SV_LinkEntity(body);
++        g_coopBodyEnt = body->s.number;
++        s_curAnim[0] = -1;
++        Com_Printf(CON_CHANNEL_SERVER, "COOP: player 0 body is entity %d\n", g_coopBodyEnt);
++        return;
++    }
++    gentity_s *ent = SV_GentityNum(n);
++    if (!ent->pAnimTree) // soldier animation set, as used by the AI
++        ent->pAnimTree = Com_XAnimCreateSmallTree(g_scr_data.generic_human.tree.anims);
++    const char *bodyModel = Coop_BodyModel();
++    if (bodyModel)
++    {
++        G_SetModel(ent, bodyModel);
++        G_DObjUpdate(ent);
++    }
++    s_curAnim[n] = -1;
++}
++
++// ---- body animation: chosen from each player's movement state, the same on every machine
++enum CoopAnim { CA_STAND, CA_WALK, CA_RUN, CA_CROUCH, CA_CROUCHWALK, CA_PRONE, CA_CRAWL, CA_ADS, CA_DEATH, CA_DEATH_CROUCH, CA_DEATH_PRONE,
++    CA_PISTOL, CA_RELOAD, CA_RELOAD_CROUCH, CA_RELOAD_PRONE, CA_PISTOL_RELOAD,
++    CA_THROW, CA_THROW_CROUCH, CA_THROW_PRONE, CA_MELEE, CA_MELEE_PRONE,
++    CA_PAIN, CA_PAIN_CROUCH, CA_PAIN_PRONE, CA_COUNT };
++static const char *s_animNames[CA_COUNT] = {
++    "exposed_aim_5", "walk_CQB_F", "run_lowready_F",
++    "exposed_crouch_aim_5", "crouch_fastwalk_F", "prone_aim_5", "prone_crawl", "CQB_stand_aim5",
++    "exposed_death", "exposed_crouch_death_flip", "prone_death_quickdeath",
++    "pistol_stand_aim_5", "exposed_reload", "exposed_crouch_reload", "prone_reload", "pistol_stand_reload_A",
++    "stand_grenade_throw", "crouch_grenade_throw", "prone_grenade_a", "melee_1", "melee_1",
++    "exposed_pain_right_arm", "exposed_crouch_pain_flinch", "prone_painA_holdchest",
++};
++// console overrides for experimenting: coop_anim_stand, coop_anim_walk, ...
++static const char *s_animDvars[CA_COUNT] = {
++    "coop_anim_stand", "coop_anim_walk", "coop_anim_run",
++    "coop_anim_crouch", "coop_anim_crouchwalk", "coop_anim_prone", "coop_anim_crawl", "coop_anim_ads",
++    "coop_anim_death", "coop_anim_death_crouch", "coop_anim_death_prone",
++    "coop_anim_pistol", "coop_anim_reload", "coop_anim_reload_crouch", "coop_anim_reload_prone", "coop_anim_pistol_reload",
++    "coop_anim_throw", "coop_anim_throw_crouch", "coop_anim_throw_prone", "coop_anim_melee", "coop_anim_melee_prone",
++    "coop_anim_pain", "coop_anim_pain_crouch", "coop_anim_pain_prone",
++};
++static int s_animIndex[CA_COUNT];
++static char s_animUsed[CA_COUNT][64];
++static const XAnim_s *s_animIndexFor;
++
++static void Coop_ResolveAnims(const XAnim_s *anims)
++{
++    bool changed = s_animIndexFor != anims;
++    for (int a = 0; a < CA_COUNT && !changed; a++)
++    {
++        const char *want = *Coop_Dvar(s_animDvars[a]) ? Coop_Dvar(s_animDvars[a]) : s_animNames[a];
++        changed = strcmp(want, s_animUsed[a]) != 0;
++    }
++    if (!changed)
++        return;
++    s_animIndexFor = anims;
++    for (int n = 0; n < COOP_MAX_CLIENTS; n++)
++        s_curAnim[n] = -1; // re-apply with the new names
++    for (int a = 0; a < CA_COUNT; a++)
++    {
++        const char *want = *Coop_Dvar(s_animDvars[a]) ? Coop_Dvar(s_animDvars[a]) : s_animNames[a];
++        I_strncpyz(s_animUsed[a], want, sizeof(s_animUsed[a]));
++        s_animIndex[a] = -1;
++        for (unsigned int i = 0; i < anims->size; i++)
++        {
++            const char *name = XAnimGetAnimDebugName(anims, i);
++            if (name && !_stricmp(name, s_animUsed[a]))
++            {
++                s_animIndex[a] = i;
++                break;
++            }
++        }
++        if (s_animIndex[a] < 0)
++            Com_Printf(CON_CHANNEL_SERVER, "COOP: body anim '%s' not in generic_human\n", s_animUsed[a]);
++        else
++            Com_Printf(CON_CHANNEL_SERVER, "COOP: body anim %s = %s\n", s_animDvars[a], s_animUsed[a]);
++    }
++}
++
++// weapon in hand: attach the current weapon's world model to the right-hand tag whenever
++// the player's weapon changes (deterministic, so every machine does the same)
++static int s_heldWeapon[COOP_MAX_CLIENTS];
++static void Coop_UpdateHeldWeapon(int n, gentity_s *ent, const playerState_s *ps)
++{
++    if (s_curAnim[n] < 0 && s_heldWeapon[n] != -1)
++        s_heldWeapon[n] = -1; // body was (re)created: attach afresh
++    if (s_heldWeapon[n] == (int)ps->weapon)
++        return;
++    s_heldWeapon[n] = ps->weapon;
++    s_curAnim[n] = -1; // attaching rebuilds the DObj: the pose must be applied again
++    G_EntDetachAll(ent);
++    if (!ps->weapon)
++        return;
++    const WeaponDef *def = BG_GetWeaponDef(ps->weapon);
++    if (!def || !def->worldModel[0] || XModelBad(def->worldModel[0]))
++        return;
++    const char *name = XModelGetName(def->worldModel[0]);
++    if (!Coop_PrecachedModel(name, 0)) // this map never loaded that weapon's world model
++        return;
++    if (!G_EntAttach(ent, name, scr_const.tag_weapon_right, 0))
++        Com_Printf(CON_CHANNEL_SERVER, "COOP: could not attach %s to p%d\n", name, n);
++}
++
++// called before G_RunFrame on every machine
++void SV_CoopAnimatePlayers()
++{
++    bool session = false;
++    for (int n = 1; n < COOP_MAX_CLIENTS; n++)
++        session |= svs.clients[n].state == 1;
++    if (!session || !sv.state)
++        return;
++
++    for (int n = 0; n < COOP_MAX_CLIENTS; n++)
++    {
++        if (svs.clients[n].state != 1)
++            continue;
++        gentity_s *ent = Coop_BodyEntFor(n);
++        if (!ent || !ent->model || !ent->pAnimTree)
++            continue;
++        if (n == 0)
++        {
++            // follow player 0: position + view angles (pitch is bent into the spine by cgame)
++            const playerState_s *ps0 = &level.clients[0].ps;
++            float ang[3] = { ps0->pm_type >= PM_DEAD ? 0.0f : ps0->viewangles[0], ps0->viewangles[1], 0.0f };
++            G_SetOrigin(ent, (float *)ps0->origin);
++            G_SetAngle(ent, ang);
++            SV_LinkEntity(ent);
++        }
++        DObj_s *obj = Com_GetServerDObj(ent->s.number);
++        if (!obj)
++            continue;
++        Coop_ResolveAnims(XAnimGetAnims(ent->pAnimTree));
++
++        const playerState_s *ps = &level.clients[n].ps;
++        g_coopPlayerLean[ent->s.number & 63] = ps->leanf;
++        if (ps->pm_type >= PM_DEAD)
++        {
++            // fall down once, in the pose matching the stance they died in, and stay there
++            int deathAnim = (ps->pm_flags & PMF_PRONE) ? CA_DEATH_PRONE : (ps->pm_flags & PMF_DUCKED) ? CA_DEATH_CROUCH : CA_DEATH;
++            if (s_curAnim[n] != CA_DEATH && s_curAnim[n] != CA_DEATH_CROUCH && s_curAnim[n] != CA_DEATH_PRONE && s_animIndex[deathAnim] >= 0)
++            {
++                int cur = s_curAnim[n];
++                if (cur >= 0 && s_animIndex[cur] >= 0)
++                    XAnimSetGoalWeight(obj, s_animIndex[cur], 0.0f, 0.2f, 1.0f, 0, 0, 0);
++                XAnimSetTime(ent->pAnimTree, s_animIndex[deathAnim], 0.0f); // play from the start, not the end of an earlier death
++                XAnimSetCompleteGoalWeight(obj, s_animIndex[deathAnim], 1.0f, 0.1f, 1.0f, 0, 0, 0);
++                s_curAnim[n] = deathAnim;
++            }
++            ent->flags |= FL_REPEAT_ANIM_UPDATE;
++            continue;
++        }
++        Coop_UpdateHeldWeapon(n, ent, ps);
++        obj = Com_GetServerDObj(ent->s.number); // may have been rebuilt by the attach
++        if (!obj)
++            continue;
++        // horizontal speed from how far the player actually moved since the last frame
++        // (ps->velocity reads 0 here)
++        static float prevOrg[COOP_MAX_CLIENTS][2];
++        static int prevTime[COOP_MAX_CLIENTS];
++        float speed = 0.0f;
++        int dt = level.time - prevTime[n];
++        if (dt == 0 && s_curAnim[n] >= 0)
++            continue; // called again within the same level frame: keep the current anim
++        if (dt > 0 && dt < 500)
++        {
++            float dx = ps->origin[0] - prevOrg[n][0], dy = ps->origin[1] - prevOrg[n][1];
++            speed = sqrtf(dx * dx + dy * dy) * 1000.0f / dt;
++        }
++        prevOrg[n][0] = ps->origin[0];
++        prevOrg[n][1] = ps->origin[1];
++        prevTime[n] = level.time;
++        // hysteresis: a speed hovering at a threshold must not flip the anim every frame
++        int cur = s_curAnim[n];
++        bool wasMoving = cur == CA_WALK || cur == CA_RUN || cur == CA_CROUCHWALK || cur == CA_CRAWL;
++        bool moving = speed > (wasMoving ? 15.0f : 30.0f);
++        int anim;
++        float rate = 1.0f;
++        if (ps->pm_flags & PMF_PRONE)
++            anim = moving ? CA_CRAWL : CA_PRONE;
++        else if (ps->pm_flags & PMF_DUCKED)
++            anim = moving ? CA_CROUCHWALK : CA_CROUCH;
++        else if (moving && speed > (cur == CA_RUN ? 110.0f : 150.0f))
++        {
++            anim = CA_RUN;
++            rate = speed / 190.0f; // the run cycle covers ~190 units/s
++        }
++        else if (moving)
++            anim = CA_WALK;
++        else if (ps->fWeaponPosFrac >= 0.9f)
++            anim = CA_ADS; // aiming down sights while standing still
++        else
++            anim = CA_STAND;
++
++        // hit reaction: remember when health dropped, flinch for a moment
++        static int prevHealth[COOP_MAX_CLIENTS], painUntil[COOP_MAX_CLIENTS];
++        int health = ps->stats[STAT_HEALTH];
++        if (cur >= 0 && health < prevHealth[n] && health > 0)
++            painUntil[n] = level.time + 400;
++        prevHealth[n] = health;
++
++        // weapon class and what the weapon is doing right now (reload / grenade / knife)
++        const WeaponDef *wdef = ps->weapon ? BG_GetWeaponDef(ps->weapon) : 0;
++        bool pistol = wdef && wdef->weapClass == WEAPCLASS_PISTOL;
++        bool prone = (ps->pm_flags & PMF_PRONE) != 0, ducked = (ps->pm_flags & PMF_DUCKED) != 0;
++        int ws = ps->weaponstate;
++        bool action = true;
++        if (ws >= WEAPON_OFFHAND_INIT && ws <= WEAPON_OFFHAND_END)
++            anim = prone ? CA_THROW_PRONE : ducked ? CA_THROW_CROUCH : CA_THROW;
++        else if (ws >= WEAPON_MELEE_INIT && ws <= WEAPON_MELEE_END)
++            anim = prone ? CA_MELEE_PRONE : CA_MELEE;
++        else if (ws >= WEAPON_RELOADING && ws <= WEAPON_RELOAD_END)
++            anim = pistol && !prone && !ducked ? CA_PISTOL_RELOAD : prone ? CA_RELOAD_PRONE : ducked ? CA_RELOAD_CROUCH : CA_RELOAD;
++        else
++        {
++            action = false;
++            if (pistol && (anim == CA_STAND || anim == CA_ADS))
++                anim = CA_PISTOL;
++            if (level.time < painUntil[n]) // flinch, but never over a reload / throw / knife
++            {
++                anim = prone ? CA_PAIN_PRONE : ducked ? CA_PAIN_CROUCH : CA_PAIN;
++                action = true;
++            }
++        }
++
++        static int lastLog;
++        if (atoi(Coop_Dvar("coop_debug")) && (level.time - lastLog > 1000 || level.time < lastLog)) // +set coop_debug 1
++        {
++            if (n == COOP_MAX_CLIENTS - 1 || svs.clients[n + 1].state != 1)
++                lastLog = level.time;
++            int ci = s_curAnim[n] >= 0 ? s_animIndex[s_curAnim[n]] : -1;
++            Com_Printf(CON_CHANNEL_SERVER, "COOP-ANIM: p%d tree %s model %d scripted %d | ", n,
++                DObjGetTree(obj) == ent->pAnimTree ? "ok" : (DObjGetTree(obj) ? "OTHER" : "NONE"), ent->model, ent->scripted != 0);
++            Com_Printf(CON_CHANNEL_SERVER, "p%d speed %.0f flags 0x%x -> %s | cur time %.2f w %.2f, crouch w %.2f, stand w %.2f\n",
++                n, speed, ps->pm_flags, s_animUsed[anim],
++                ci >= 0 ? XAnimGetTime(ent->pAnimTree, ci) : -1.0,
++                ci >= 0 ? XAnimGetWeight(ent->pAnimTree, ci) : -1.0,
++                s_animIndex[CA_CROUCH] >= 0 ? XAnimGetWeight(ent->pAnimTree, s_animIndex[CA_CROUCH]) : -1.0,
++                s_animIndex[CA_STAND] >= 0 ? XAnimGetWeight(ent->pAnimTree, s_animIndex[CA_STAND]) : -1.0);
++        }
++
++        if (anim != s_curAnim[n] && s_animIndex[anim] >= 0)
++        {
++            // fade the previous pose out explicitly: it may live in another branch of the
++            // tree, where "complete goal weight" doesn't reach (crouch stayed after standing up)
++            if (cur >= 0 && s_animIndex[cur] >= 0)
++                XAnimSetGoalWeight(obj, s_animIndex[cur], 0.0f, 0.2f, 1.0f, 0, 0, 0);
++            else if (cur < 0)
++            {
++                // fresh start (spawn / respawn / new weapon model): nothing is known to be playing, so
++                // fade out every pose, or a death pose would stay under the new one
++                for (int a = 0; a < CA_COUNT; a++)
++                    if (a != anim && s_animIndex[a] >= 0)
++                        XAnimSetGoalWeight(obj, s_animIndex[a], 0.0f, 0.1f, 1.0f, 0, 0, 0);
++            }
++            if (action)
++                XAnimSetTime(ent->pAnimTree, s_animIndex[anim], 0.0f); // play the action from its start
++            int err = XAnimSetCompleteGoalWeight(obj, s_animIndex[anim], 1.0f, action ? 0.1f : 0.2f, rate, 0, 0, 0);
++            if (err)
++                Com_Printf(CON_CHANNEL_SERVER, "COOP-ANIM: p%d set %s failed (error %d)\n", n, s_animUsed[anim], err);
++            s_curAnim[n] = anim;
++        }
++        ent->flags |= FL_REPEAT_ANIM_UPDATE;
++    }
++}
++
++// a free player-sized spot near the anchor: sweep a player box out from the anchor in a fixed
++// order of directions/distances (same result on every machine), skip anything blocked, then
++// drop to the floor. Falls back to the anchor's own position.
++static void Coop_FindSpot(gentity_s *anchor, float *out)
++{
++    static const float dist[] = { 48.0f, 80.0f, 120.0f };
++    static const float dirs[8][2] = {
++        { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 },
++        { 0.7071f, 0.7071f }, { -0.7071f, 0.7071f }, { 0.7071f, -0.7071f }, { -0.7071f, -0.7071f },
++    };
++    const float *a = anchor->r.currentOrigin;
++    float from[3] = { a[0], a[1], a[2] + 18.0f }; // a little up, clear of steps
++    for (int d = 0; d < 3; d++)
++    {
++        for (int i = 0; i < 8; i++)
++        {
++            float to[3] = { a[0] + dirs[i][0] * dist[d], a[1] + dirs[i][1] * dist[d], from[2] };
++            trace_t tr;
++            G_TraceCapsule(&tr, from, playerMins, playerMaxs, to, anchor->s.number, MASK_PLAYERSOLID);
++            if (tr.startsolid || tr.allsolid || tr.fraction < 1.0f)
++                continue; // wall, crate, another player, or a different room
++            float down[3] = { to[0], to[1], to[2] - 128.0f };
++            G_TraceCapsule(&tr, to, playerMins, playerMaxs, down, anchor->s.number, MASK_PLAYERSOLID);
++            if (tr.startsolid || tr.allsolid || tr.fraction >= 1.0f)
++                continue; // no floor (ledge, water)
++            float floorZ = to[2] + (down[2] - to[2]) * tr.fraction;
++            if (to[2] - floorZ > 40.0f)
++                continue; // a drop, not ground at our level
++            // not at an edge: ground must be close below on all four sides too
++            bool edge = false;
++            static const float side[4][2] = { { 28, 0 }, { -28, 0 }, { 0, 28 }, { 0, -28 } };
++            for (int k = 0; k < 4 && !edge; k++)
++            {
++                float sf[3] = { to[0] + side[k][0], to[1] + side[k][1], to[2] };
++                float sd[3] = { sf[0], sf[1], to[2] - 64.0f };
++                trace_t st;
++                G_TraceCapsule(&st, sf, playerMins, playerMaxs, sd, anchor->s.number, MASK_PLAYERSOLID);
++                edge = st.fraction >= 1.0f;
++            }
++            if (edge)
++                continue;
++            out[0] = to[0];
++            out[1] = to[1];
++            out[2] = floorZ;
++            return;
++        }
++    }
++    out[0] = a[0];
++    out[1] = a[1];
++    out[2] = a[2];
++}
++
++// put player n beside player 0 with player 0's loadout (spawn and respawn)
++static void Coop_PlacePlayer(int n)
++{
++    gentity_s *ent = SV_GentityNum(n);
++    gentity_s *host = SV_GentityNum(Coop_AnchorFor(n));
++    float org[3];
++    Coop_FindSpot(host, org);
++    G_SetOrigin(ent, org);
++    ent->client->ps.origin[0] = org[0];
++    ent->client->ps.origin[1] = org[1];
++    ent->client->ps.origin[2] = org[2];
++    SV_LinkEntity(ent);
++
++    // same loadout as player 0 (identical on every machine: done from replayed state)
++    playerState_s *ps = &ent->client->ps;
++    const playerState_s *ps0 = &host->client->ps;
++    for (int w = 1; w < 128; w++)
++    {
++        if (ps0->weapons[w >> 5] & (1u << (w & 31)))
++            G_GivePlayerWeapon(ps, w, 0);
++    }
++    memcpy(ps->ammo, ps0->ammo, sizeof(ps->ammo));
++    memcpy(ps->ammoclip, ps0->ammoclip, sizeof(ps->ammoclip));
++    ps->offHandIndex = ps0->offHandIndex;
++    ps->offhandSecondary = ps0->offhandSecondary;
++    ps->weapon = ps0->weapon;
++
++    // guest: start looking along the spawn direction (our view angles were following player 0's replay)
++    if (s_gstate == GUEST_FOLLOWING && n == 1)
++    {
++        clients[0].viewangles[0] = 0.0f;
++        clients[0].viewangles[1] = 0.0f;
++        clients[0].viewangles[2] = 0.0f;
++    }
++
++    Com_Printf(CON_CHANNEL_SERVER, "COOP: player %d spawned at (%.0f %.0f %.0f) frame %d\n",
++        n, org[0], org[1], org[2], G_GetFramePos());
++}
++
++// queue the next free slot to join at the next frame (host only; guests get joins from the stream)
++int SV_CoopQueueJoin()
++{
++    if (sv.demo.playing)
++    {
++        Com_Printf(CON_CHANNEL_SERVER, "COOP: players can only be added on the host\n");
++        return -1;
++    }
++    for (int n = 1; n < COOP_MAX_CLIENTS; n++)
++    {
++        if (!svs.clients[n].state && !s_pendingJoin[n])
++        {
++            s_pendingJoin[n] = true;
++            return n;
++        }
++    }
++    Com_Printf(CON_CHANNEL_SERVER, "COOP: all %d player slots in use\n", COOP_MAX_CLIENTS);
++    return -1;
++}
++
++void SV_CoopSetNetCmd(int n, const usercmd_s *cmd)
++{
++    s_isNetPlayer[n] = true;
++    int next = (s_cmdHead[n] + 1) % COOP_CMD_QUEUE;
++    if (next == s_cmdTail[n])
++        s_cmdTail[n] = (s_cmdTail[n] + 1) % COOP_CMD_QUEUE; // full: drop oldest
++    s_cmdQueue[n][s_cmdHead[n]] = *cmd;
++    s_cmdHead[n] = next;
++}
++
++static void Coop_RecordAndRunCmd(int n, int framePos, usercmd_s *cmd)
++{
++    client_t *cl = &svs.clients[n];
++    if (sv.demo.recording)
++    {
++        SV_CheckDemoSize();
++        MSG_WriteByte(&sv.demo.msg, COOP_DEMO_PLAYERCMD);
++        MSG_WriteLong(&sv.demo.msg, framePos);
++        MSG_WriteByte(&sv.demo.msg, n);
++        MSG_WriteDeltaUsercmd(&sv.demo.msg, &cl->lastUsercmd, cmd);
++    }
++    cl->lastUsercmd = *cmd;
++    ClientThink(n);
++}
++
++// a player left: take their entity out of the world (the slot stays reserved for players)
++static void Coop_RemovePlayer(int n)
++{
++    gentity_s *ent = SV_GentityNum(n);
++    Coop_Announce(va("%s left", Coop_NameOf(n)));
++    s_playerName[n] = -1;
++    if (ent->r.inuse)
++    {
++        if (ent->sentient)
++            Sentient_Free(ent->sentient);
++        SV_UnlinkEntity(ent);
++        ent->r.inuse = 0;
++    }
++    level.clients[n].pers.connected = CON_DISCONNECTED;
++    memset(&svs.clients[n], 0, sizeof(client_t));
++    s_isNetPlayer[n] = false;
++    s_pendingJoin[n] = false;
++    s_cmdHead[n] = s_cmdTail[n] = 0;
++    Com_Printf(CON_CHANNEL_SERVER, "COOP: player %d left at frame %d\n", n, G_GetFramePos());
++}
++
++void SV_CoopUpdateExtraPlayers()
++{
++    int framePos = G_GetFramePos();
++    for (int n = 1; n < COOP_MAX_CLIENTS; n++)
++    {
++        if (!s_pendingLeave[n])
++            continue;
++        s_pendingLeave[n] = false;
++        s_pendingJoin[n] = false;
++        if (svs.clients[n].state != 1)
++            continue;
++        if (sv.demo.recording)
++        {
++            SV_CheckDemoSize();
++            MSG_WriteByte(&sv.demo.msg, COOP_DEMO_LEAVE);
++            MSG_WriteLong(&sv.demo.msg, framePos);
++            MSG_WriteByte(&sv.demo.msg, n);
++        }
++        Coop_RemovePlayer(n);
++    }
++    // a connected guest gets a player once player 0 stands on something and moves freely
++    // (not during intros like the cargoship helicopter ride)
++    for (int i = 0; i < COOP_MAX_GUESTS; i++)
++    {
++        CoopGuestConn &c = s_guests[i];
++        if (!c.used || !c.wantsJoin)
++            continue;
++        const playerState_s *ps0 = &level.clients[0].ps;
++        if (ps0->pm_type == PM_NORMAL && ps0->groundEntityNum != ENTITYNUM_NONE)
++        {
++            if (!svs.clients[c.slot].state && !s_pendingJoin[c.slot])
++            {
++                s_pendingJoin[c.slot] = true;
++                s_pendingAnnounce[c.slot] = c.announceJoin;
++                c.announceJoin = false;
++                s_playerName[c.slot] = c.nameIndex;
++                Com_Printf(CON_CHANNEL_SERVER, "COOP-HOST: guest becomes player %d\n", c.slot);
++            }
++            c.wantsJoin = false;
++        }
++    }
++    for (int n = 1; n < COOP_MAX_CLIENTS; n++)
++    {
++        if (!s_pendingJoin[n])
++            continue;
++        s_pendingJoin[n] = false;
++        if (sv.demo.recording)
++        {
++            SV_CheckDemoSize();
++            MSG_WriteByte(&sv.demo.msg, COOP_DEMO_JOIN);
++            MSG_WriteLong(&sv.demo.msg, framePos);
++            MSG_WriteByte(&sv.demo.msg, n);
++            // callsign index, top bit = say "joined" on screen
++            MSG_WriteByte(&sv.demo.msg, (s_playerName[n] >= 0 ? s_playerName[n] : 0) | (s_pendingAnnounce[n] ? 0x80 : 0));
++        }
++        Coop_SpawnPlayer(n);
++        if (s_pendingAnnounce[n])
++            Coop_Announce(va("%s joined", Coop_NameOf(n)));
++        s_pendingAnnounce[n] = false;
++    }
++    for (int n = 1; n < COOP_MAX_CLIENTS; n++)
++    {
++        client_t *cl = &svs.clients[n];
++        if (cl->state != 1)
++            continue;
++        if (!s_isNetPlayer[n])
++        {
++            // local test client: one idle command on the host's clock
++            usercmd_s cmd = s_netCmd[n];
++            cmd.serverTime = G_GetTime();
++            Coop_RecordAndRunCmd(n, framePos, &cmd);
++            continue;
++        }
++        // network player: run every queued command in order, on the guest's own clock
++        int now = G_GetTime();
++        while (s_cmdTail[n] != s_cmdHead[n])
++        {
++            usercmd_s cmd = s_cmdQueue[n][s_cmdTail[n]];
++            s_cmdTail[n] = (s_cmdTail[n] + 1) % COOP_CMD_QUEUE;
++            if (cmd.serverTime <= cl->lastUsercmd.serverTime)
++                continue; // stale or duplicate
++            if (cmd.serverTime > now)
++                cmd.serverTime = now;
++            Coop_RecordAndRunCmd(n, framePos, &cmd);
++        }
++    }
++}
++
++// replay reader: handles our item types (readType already consumed incl. framePos)
++bool SV_CoopReadDemoItem(int type)
++{
++    if (type != COOP_DEMO_PLAYERCMD && type != COOP_DEMO_JOIN && type != COOP_DEMO_LEAVE)
++        return false;
++    int n = MSG_ReadByte(&sv.demo.msg);
++    if (n < 1 || n >= COOP_MAX_CLIENTS)
++    {
++        Com_Printf(CON_CHANNEL_SERVER, "COOP: bad player %d in replay stream\n", n);
++        n = 1;
++    }
++    if (type == COOP_DEMO_LEAVE)
++    {
++        SV_ReadNextDemoType();
++        Coop_RemovePlayer(n);
++        return true;
++    }
++    if (type == COOP_DEMO_JOIN)
++    {
++        int nameByte = MSG_ReadByte(&sv.demo.msg);
++        SV_ReadNextDemoType();
++        s_playerName[n] = nameByte & 0x7F;
++        Coop_SpawnPlayer(n);
++        if (nameByte & 0x80)
++            Coop_Announce(va("%s joined", Coop_NameOf(n)));
++        return true;
++    }
++    usercmd_s cmd;
++    MSG_ReadDeltaUsercmd(&sv.demo.msg, &svs.clients[n].lastUsercmd, &cmd);
++    SV_ReadNextDemoType();
++    if (svs.clients[n].state == 1)
++    {
++        svs.clients[n].lastUsercmd = cmd;
++        ClientThink(n);
++    }
++    return true;
++}
++
++// which player this machine's screen shows: the guest follows player 1 once it exists;
++// "+set coop_view N" overrides (handy for testing on the host)
++int SV_CoopViewClient()
++{
++    const char *v = Coop_Dvar("coop_view");
++    if (*v)
++    {
++        int n = atoi(v);
++        if (n >= 0 && n < COOP_MAX_CLIENTS && svs.clients[n].state == 1)
++            return n;
++        return 0;
++    }
++    if (s_gstate == GUEST_FOLLOWING && svs.clients[s_mySlot].state == 1)
++        return s_mySlot;
++    return 0;
++}
++
++// after the level was restored from a snapshot: the save holds the players' entities, but not the
++// engine-side client records or each player's last input (the replay decodes inputs as deltas from it)
++static void Coop_ApplySnapshotFix()
++{
++    s_snapFixPending = false;
++    for (int n = 1; n < COOP_MAX_CLIENTS; n++)
++    {
++        client_t *cl = &svs.clients[n];
++        memset(cl, 0, sizeof(*cl));
++        if (!s_snapFix.active[n])
++            continue;
++        cl->gentity = SV_GentityNum(n);
++        cl->state = 1;
++        cl->lastUsercmd = s_snapFix.cmd[n];
++        s_playerName[n] = s_snapFix.name[n];
++        Coop_GiveBody(n); // animation tree / model for the restored player entity
++    }
++    g_coopBodyEnt = s_snapFix.bodyEnt;
++    if (g_coopBodyEnt >= 0)
++    {
++        gentity_s *b = SV_GentityNum(g_coopBodyEnt);
++        if (b->r.inuse)
++        {
++            if (!b->pAnimTree)
++                b->pAnimTree = Com_XAnimCreateSmallTree(g_scr_data.generic_human.tree.anims);
++            const char *bodyModel = Coop_BodyModel();
++            if (bodyModel)
++                G_SetModel(b, bodyModel);
++            G_DObjUpdate(b);
++            s_curAnim[0] = -1;
++        }
++    }
++    Com_Printf(CON_CHANNEL_SERVER, "COOP-GUEST: snapshot restored (body entity %d)\n", g_coopBodyEnt);
++}
++
++// a guest is connected to this host: the victory screen then moves on to the next map by itself
++bool SV_CoopHostHasGuest()
++{
++    for (int i = 0; i < COOP_MAX_GUESTS; i++)
++        if (s_guests[i].used)
++            return true;
++    return false;
++}
++
++bool SV_CoopIsGuest()
++{
++    return s_gstate == GUEST_FOLLOWING;
++}
++
++// called from respawn() when an extra player's death delay ran out (same frame on every machine):
++// co-op rule - extra players respawn beside player 0 instead of reloading the checkpoint
++void SV_CoopRespawnPlayer(gentity_s *ent)
++{
++    int n = ent->s.number;
++    ent->handler = ENT_HANDLER_CLIENT; // death switched it to ENT_HANDLER_CLIENT_DEAD (SP never revives)
++    ClientSpawn(ent);
++    Coop_PlacePlayer(n);
++    Coop_GiveBody(n);
++    Com_Printf(CON_CHANNEL_SERVER, "COOP: player %d respawned at frame %d\n", n, G_GetFramePos());
++}
+diff --git a/src/server/sv_demo.cpp b/src/server/sv_demo.cpp
+index 53108d8..6a686cd 100644
+--- a/src/server/sv_demo.cpp
++++ b/src/server/sv_demo.cpp
+@@ -22,7 +22,9 @@
+ #include <game/savedevice.h>
+ 
+ unsigned __int8 g_buf[2][3145728];
+-unsigned __int8 g_msgBuf[10485760];
++// COOP: was 10 MB (~17 min of recording); a mission between checkpoints can run longer than that
++#define COOP_DEMO_MSG_SIZE (64 * 1024 * 1024)
++unsigned __int8 g_msgBuf[COOP_DEMO_MSG_SIZE];
+ FileSkip g_fileSkips[3600]{ 0 };
+ FileMarkSkip g_fileMarkSkips[50];
+ server_demo_history_t g_historyBuffers[2];
+@@ -38,7 +40,7 @@ server_demo_history_t *volatile g_historySaving;
+ void __cdecl TRACK_sv_demo()
+ {
+     track_static_alloc_internal(g_buf, 6291456, "g_buf", 0);
+-    track_static_alloc_internal(g_msgBuf, 10485760, "g_msgBuf", 0);
++    track_static_alloc_internal(g_msgBuf, COOP_DEMO_MSG_SIZE, "g_msgBuf", 0);
+     track_static_alloc_internal(g_fileSkips, 28800, "g_fileSkips", 0);
+     track_static_alloc_internal(g_fileMarkSkips, 3400, "g_fileMarkSkips", 0);
+     track_static_alloc_internal(g_historyBuffers, 344, "g_historyBuffers", 0);
+@@ -139,10 +141,10 @@ int __cdecl SV_MsgAlloc(unsigned int maxsize)
+ {
+     if (sv.demo.msg.data)
+         MyAssertHandler("c:\\trees\\cod3\\cod3src\\src\\server\\sv_demo.cpp", 271, 0, "%s", "!sv.demo.msg.data");
+-    if (maxsize > 0xA00000)
++    if (maxsize > COOP_DEMO_MSG_SIZE)
+         return 0;
+     sv.demo.msg.data = g_msgBuf;
+-    sv.demo.msg.maxsize = 10485760;
++    sv.demo.msg.maxsize = COOP_DEMO_MSG_SIZE;
+     memset(g_msgBuf, 0, sizeof(g_msgBuf));
+     return 1;
+ }
+@@ -159,7 +161,7 @@ void SV_CheckDemoSize()
+                 0,
+                 "%s",
+                 "sv.demo.msg.data == g_msgBuf");
+-        if (sv.demo.msg.maxsize != 10485760)
++        if (sv.demo.msg.maxsize != COOP_DEMO_MSG_SIZE)
+             MyAssertHandler(
+                 "c:\\trees\\cod3\\cod3src\\src\\server\\sv_demo.cpp",
+                 291,
+@@ -479,6 +481,126 @@ _iobuf *__cdecl SV_DemoOpenFile(const char *fileName)
+     return 0;
+ }
+ 
++// COOP (sv_coop.cpp): counts recordings started, so the host notices a checkpoint reload / level load
++unsigned int g_coopRecordingGen;
++
++// COOP: read the start-of-recording savegame, to send to the guest
++bool SV_CoopGetDemoSave(const unsigned char **data, int *len)
++{
++    if (!sv.demo.save.buf)
++        return false;
++    *data = sv.demo.save.buf;
++    *len = sv.demo.save.bufLen;
++    return true;
++}
++
++// COOP: guest replaces its start-of-recording savegame with the host's, so a replay restart
++// begins from the host's checkpoint
++bool SV_CoopSetDemoSave(const unsigned char *data, int len)
++{
++    if (sv.demo.save.buf)
++    {
++        SV_HistoryFree(sv.demo.save.buf, sv.demo.save.bufLen);
++        sv.demo.save.buf = 0;
++        sv.demo.save.bufLen = 0;
++    }
++    server_demo_history_t *history = g_history ? g_history : g_historyBuffers;
++    if (!SV_HistoryAlloc(history, &sv.demo.save.buf, len))
++        return false;
++    memcpy(sv.demo.save.buf, data, len);
++    sv.demo.save.bufLen = len;
++    sv.demo.nextLevelSave = 0;
++    return true;
++}
++
++extern gentity_s g_entities[MAX_GENTITIES]; // game/g_main.cpp
++
++// COOP: take a snapshot of the game as it is right now (host, between frames). Uses the same machinery
++// as the "replay_mark" command, then copies the result out so nothing depends on the history buffers.
++bool SV_CoopTakeSnapshot(CoopSnapshot *o)
++{
++    memset(o, 0, sizeof(*o));
++    if (!sv.demo.recording || !sv.demo.msg.data)
++        return false;
++    if (!SV_GetMarkHistory("coopjoin"))
++        return false;
++    SV_FreeHistoryData(g_history);
++    server_demo_history_t *h = g_history;
++    bool ok = SV_DemoSaveHistory(h) != 0 && h->save.buf && h->cmBuf && h->freeEntBuf;
++    if (ok)
++    {
++        o->time = h->time;
++        o->randomSeed = h->randomSeed;
++        o->nextFramePos = h->nextFramePos;
++        o->msgBit = h->msgBit;
++        o->msgReadcount = h->msgReadcount;
++        o->readType = h->readType;
++        memcpy(&o->lastUsercmd, &h->lastUsercmd, sizeof(o->lastUsercmd));
++        o->saveLen = h->save.bufLen;
++        o->cmLen = h->cmBufLen;
++        o->freeLen = h->freeEntBufLen;
++        o->save = (unsigned char *)malloc(o->saveLen);
++        o->cm = (unsigned char *)malloc(o->cmLen);
++        o->freeEnt = (unsigned char *)malloc(o->freeLen);
++        memcpy(o->save, h->save.buf, o->saveLen);
++        memcpy(o->cm, h->cmBuf, o->cmLen);
++        memcpy(o->freeEnt, h->freeEntBuf, o->freeLen);
++        // the free-entity list holds raw gentity addresses, valid only inside this process: send entity
++        // numbers (+1, 0 = none) instead, the guest turns them back into its own addresses
++        unsigned int *w = (unsigned int *)o->freeEnt;
++        for (int i = 0; i < o->freeLen / 4; i++)
++            if (w[i])
++                w[i] = (unsigned int)((gentity_s *)(uintptr_t)w[i] - g_entities) + 1;
++    }
++    SV_FreeHistoryData(g_history);
++    g_history = 0;
++    if (!ok)
++        SV_CoopFreeSnapshot(o);
++    return ok;
++}
++
++void SV_CoopFreeSnapshot(CoopSnapshot *s)
++{
++    free(s->save);
++    free(s->cm);
++    free(s->freeEnt);
++    memset(s, 0, sizeof(*s));
++}
++
++// COOP (guest): make the next replay start from a host snapshot. The history object and its buffers
++// are ours (plain malloc), owned until the next snapshot replaces them.
++bool SV_CoopInstallSnapshot(const CoopSnapshot *s)
++{
++    static server_demo_history_t hist;
++    free(hist.save.buf);
++    free(hist.cmBuf);
++    free(hist.freeEntBuf);
++    memset(&hist, 0, sizeof(hist));
++    hist.time = s->time;
++    hist.randomSeed = s->randomSeed;
++    hist.nextFramePos = s->nextFramePos;
++    hist.msgBit = s->msgBit;
++    hist.msgReadcount = s->msgReadcount;
++    hist.readType = s->readType;
++    memcpy(&hist.lastUsercmd, &s->lastUsercmd, sizeof(hist.lastUsercmd));
++    hist.save.buf = (unsigned char *)malloc(s->saveLen);
++    hist.save.bufLen = s->saveLen;
++    hist.cmBuf = (unsigned char *)malloc(s->cmLen);
++    hist.cmBufLen = s->cmLen;
++    hist.freeEntBuf = (unsigned char *)malloc(s->freeLen);
++    hist.freeEntBufLen = s->freeLen;
++    memcpy(hist.save.buf, s->save, s->saveLen);
++    memcpy(hist.cmBuf, s->cm, s->cmLen);
++    memcpy(hist.freeEntBuf, s->freeEnt, s->freeLen);
++    unsigned int *w = (unsigned int *)hist.freeEntBuf; // entity numbers (+1) back to this process's addresses
++    for (int i = 0; i < s->freeLen / 4; i++)
++        if (w[i])
++            w[i] = w[i] - 1 < MAX_GENTITIES ? (unsigned int)(uintptr_t)&g_entities[w[i] - 1] : 0;
++    sv.demo.nextLevelSave = &hist;
++    sv.demo.nextLevelTime = 0;
++    return true;
++}
++
+ void __cdecl SV_InitWriteDemo(int randomSeed)
+ {
+     ProfLoad_Begin("SV_InitWriteDemo");
+@@ -496,6 +618,7 @@ void __cdecl SV_InitWriteDemo(int randomSeed)
+     {
+         sv.demo.startTime = G_GetTime();
+         sv.demo.recording = 1;
++        g_coopRecordingGen++; // COOP
+         if (sv.demo.msg.data)
+             MyAssertHandler("c:\\trees\\cod3\\cod3src\\src\\server\\sv_demo.cpp", 1045, 0, "%s", "!sv.demo.msg.data");
+         MSG_Init(&sv.demo.msg, 0, 0);
+@@ -947,6 +1070,7 @@ void __cdecl SV_LoadDemo(SaveGame *save, void *fileHandle)
+     ReadFromDevice(&v8, 4, fileHandle);
+     if (sv.demo.msg.data)
+         MyAssertHandler("c:\\trees\\cod3\\cod3src\\src\\server\\sv_demo.cpp", 1927, 0, "%s", "!sv.demo.msg.data");
++    Com_Printf(CON_CHANNEL_SERVER, "COOP-DEMO: SV_LoadDemo flags=%d endTime=%d msgSize=%u\n", *(int *)&sv.demo, sv.demo.endTime, v8); // COOP debug
+     if (!(unsigned __int8)SV_MsgAlloc(v8))
+         Sys_OutOfMemErrorInternal("c:\\trees\\cod3\\cod3src\\src\\server\\sv_demo.cpp", 1929);
+     MSG_Init(&sv.demo.msg, sv.demo.msg.data, sv.demo.msg.maxsize);
+@@ -1955,7 +2079,7 @@ void __cdecl SV_EndDemo(bool error)
+     }
+     else
+     {
+-        Com_Printf(CON_CHANNEL_SERVER, "End of replay.\n");
++        Com_Printf(CON_CHANNEL_SERVER, "End of replay. (COOP: level time %d ms)\n", G_GetTime());
+         sv.demo.recording = 1;
+         if (sv.demo.startLive)
+         {
+@@ -2001,6 +2125,8 @@ void SV_ReadNextDemoType()
+         case 0:
+         case 2:
+         case 6:
++        case 11: // COOP: extra player input
++        case 12: // COOP: extra player join
+             sv.demo.nextFramePos = MSG_ReadLong(&sv.demo.msg);
+             break;
+         case 1:
+@@ -2104,6 +2230,8 @@ bool __cdecl SV_InitDemo(int *randomSeed)
+     return 0;
+ }
+ 
++bool SV_CoopReadDemoItem(int type); // COOP (sv_coop.cpp)
++
+ bool __cdecl SV_ReadPacket(int framePos)
+ {
+     bool result; // r3
+@@ -2126,6 +2254,8 @@ bool __cdecl SV_ReadPacket(int framePos)
+                 CL_ClearClientThinkPacket();
+                 goto LABEL_18;
+             }
++            if (SV_CoopReadDemoItem(sv.demo.readType)) // COOP: extra players
++                goto LABEL_18;
+             if (sv.demo.readType == 2)
+                 break;
+             if (sv.demo.readType != 6)
+diff --git a/src/server/sv_game.cpp b/src/server/sv_game.cpp
+index bbe893e..16892c8 100644
+--- a/src/server/sv_game.cpp
++++ b/src/server/sv_game.cpp
+@@ -521,7 +521,7 @@ void __cdecl SV_CheckLoadLevel(SaveGame *save)
+     Hunk_CheckTempMemoryHighClear();
+ }
+ 
+-static void SV_FreeReliableCommandsForClient(client_t *cl)
++static void SV_FreeReliableCommandsForClient_Local(client_t *cl)
+ {
+     Com_Memset(&cl->reliableCommands, 0, 12);
+ }
+@@ -536,7 +536,7 @@ static void SV_ShutdownGameVM(int clearScripts)
+     sv.state = SS_DEAD;
+     G_ShutdownGame(clearScripts);
+     svs.clients->gentity = 0;
+-    SV_FreeReliableCommandsForClient(svs.clients);
++    SV_FreeReliableCommandsForClient_Local(svs.clients);
+ }
+ 
+ void __cdecl SV_ShutdownGameProgs()
+diff --git a/src/server/sv_init.cpp b/src/server/sv_init.cpp
+index 2921e6f..670e3e3 100644
+--- a/src/server/sv_init.cpp
++++ b/src/server/sv_init.cpp
+@@ -24,11 +24,11 @@
+ const dvar_t *sv_clientFrameRateFix;
+ const dvar_t *sv_loadMyChanges;
+ 
+-client_t g_sv_clients[1];
++client_t g_sv_clients[COOP_MAX_CLIENTS];
+ 
+ void __cdecl TRACK_sv_init()
+ {
+-    track_static_alloc_internal(g_sv_clients, 55080, "g_sv_clients", 9);
++    track_static_alloc_internal(g_sv_clients, sizeof(g_sv_clients), "g_sv_clients", 9);
+ }
+ 
+ void __cdecl SV_GetConfigstring(unsigned int index, char *buffer, int bufferSize)
+@@ -198,6 +198,16 @@ void __cdecl SV_Init()
+     SaveDevice_Init();
+     SV_AddOperatorCommands();
+     sv_gameskill = Dvar_RegisterInt("g_gameskill", 1, 0, 3, 0x64u, "Game skill level");
++    // COOP (both saved with the replay start state, flag 4, so guests always match the host):
++    Dvar_RegisterInt("coop_difficulty", -1, -1, 3, 4u, "Co-op: difficulty for a new game (0 recruit .. 3 veteran, -1 = leave as is)");
++    Dvar_RegisterString("coop_room", "", 0, "Co-op: the room code of this game on the relay (set by the game)");
++    Dvar_RegisterInt("coop_maxplayers", 1, 1, COOP_MAX_CLIENTS, 4u, "Co-op: players this game is set up for (1 = not a co-op game)");
++    Dvar_RegisterInt("coop_horde", 0, 0, 30, 4u, "Co-op horde mode: waves to survive (0 = off, normal campaign)");
++    Dvar_RegisterInt("coop_horde_wave", 0, 0, 1000, 4u, "Co-op horde: current wave (set by the game)");
++    Dvar_RegisterInt("coop_horde_left", 0, 0, 100000, 4u, "Co-op horde: enemies still to spawn this wave (set by the game)");
++    Dvar_RegisterInt("coop_horde_next", 0, 0, 0x7fffffff, 4u, "Co-op horde: time of the next spawn step (set by the game)");
++    Dvar_RegisterInt("coop_horde_dl", 0, 0, 0x7fffffff, 4u, "Co-op horde: time the current wave ends regardless (set by the game)");
++    Dvar_RegisterInt("coop_enemies", 1, 1, 4, 4u, "Co-op: each scripted enemy spawn produces this many enemies");
+     sv_player_maxhealth = Dvar_RegisterInt("g_player_maxhealth", 100, 10, 2000, 2u, "Maximum player health");
+     sv_player_damageMultiplier = Dvar_RegisterFloat("player_damageMultiplier", 1.0, 0.0, 1000.0, 0, 0);
+     player_healthEasy = Dvar_RegisterInt("player_healthEasy", 500, 10, 2000, 2u, "Player health on easy mode");
+@@ -234,7 +244,7 @@ void __cdecl SV_Init()
+     sv_cheats = Dvar_RegisterBool("sv_cheats", 1, 0x48u, "Enable server cheats");
+     replay_autosave = Dvar_RegisterInt(
+         "replay_autosave",
+-        30,
++        0, // COOP: was 30. Every 30 s the engine snapshotted the whole game for its replay-seeking tool: a 1-2 s hitch that grows with players and AI. A late guest takes its own snapshot (SV_CoopTakeSnapshot).
+         0,
+         0x7FFFFFFF,
+         0,
+@@ -425,6 +435,17 @@ void __cdecl SV_SpawnServer(const char *mapname, int savegame)
+     Com_SyncThreads();
+     startTime = Sys_Milliseconds();
+ 
++    // COOP: +set coop_difficulty N picks the difficulty of a fresh level (a save carries its own)
++    if (!savegame)
++    {
++        int cd = Dvar_GetInt("coop_difficulty");
++        if (cd >= 0 && cd <= 3)
++        {
++            Dvar_SetInt(sv_gameskill, cd);
++            SV_SetValuesFromSkill();
++        }
++    }
++
+     // MP ADD
+     Sys_BeginLoadThreadPriorities();
+ 
+diff --git a/src/server/sv_main.cpp b/src/server/sv_main.cpp
+index bbc4f78..83b1cc6 100644
+--- a/src/server/sv_main.cpp
++++ b/src/server/sv_main.cpp
+@@ -393,6 +393,62 @@ void __cdecl SV_PreFrame()
+     //Profile_EndInternal(0);
+ }
+ 
++void SV_CoopGuestFrame(); // sv_coop.cpp
++void SV_CoopHostFrame();  // sv_coop.cpp
++void SV_CoopAnimatePlayers(); // sv_coop.cpp
++
++// ===================== COOP phase 1: local test clients =====================
++// coop_addtestclient: queues the next free player slot to join (recorded in the replay stream,
++// so guests spawn it too). Extra players think in SV_CoopUpdateExtraPlayers (sv_coop.cpp).
++int SV_CoopQueueJoin(); // sv_coop.cpp
++void __cdecl SV_CoopAddTestClient_f()
++{
++    if (!SV_Loaded())
++    {
++        Com_Printf(CON_CHANNEL_SERVER, "coop_addtestclient: no map loaded\n");
++        return;
++    }
++    int n = SV_CoopQueueJoin();
++    if (n > 0)
++        Com_Printf(CON_CHANNEL_SERVER, "COOP: player %d will join next frame\n", n);
++}
++
++static void SV_CoopThinkTestClients()
++{
++    // +set coop_autotest N : spawn N test clients 5 s into the level (no console needed)
++    static int autoDone = 0;
++    static int lastTime = 0;
++    int now = G_GetTime();
++    if (now < lastTime)
++        autoDone = 0; // new level / restart
++    lastTime = now;
++    if (!autoDone && now > 5000)
++    {
++        autoDone = 1;
++        const dvar_s *autotest = Dvar_FindVar("coop_autotest");
++        int count = (autotest && !sv.demo.playing) ? atoi(Dvar_DisplayableValue(autotest)) : 0;
++        for (int i = 0; i < count; i++)
++            SV_CoopAddTestClient_f();
++    }
++
++    // +set coop_autocmd "<command>" +set coop_autocmd_time <sec> : run a console command once, N s into the level
++    static int autoCmdDone = 0; // once per process (a restart resets level time)
++    if (!autoCmdDone)
++    {
++        const dvar_s *cmd = Dvar_FindVar("coop_autocmd");
++        const dvar_s *at = Dvar_FindVar("coop_autocmd_time");
++        int atMs = at ? (int)(atof(Dvar_DisplayableValue(at)) * 1000.0f) : 10000;
++        if (cmd && *Dvar_DisplayableValue(cmd) && now > atMs)
++        {
++            autoCmdDone = 1;
++            Com_Printf(CON_CHANNEL_SERVER, "COOP: autocmd '%s' at %d ms\n", Dvar_DisplayableValue(cmd), now);
++            Cbuf_AddText(0, va("%s\n", Dvar_DisplayableValue(cmd)));
++        }
++    }
++
++}
++// ============================================================================
++
+ int __cdecl SV_RunFrame(ServerFrameExtent extent, int timeCap)
+ {
+     int v4; // r30
+@@ -403,6 +459,7 @@ int __cdecl SV_RunFrame(ServerFrameExtent extent, int timeCap)
+     if (!CL_DemoPlaying())
+     {
+         //Profile_Begin(234);
++        SV_CoopThinkTestClients(); // COOP
+         v4 = G_RunFrame(extent, timeCap);
+         //Profile_EndInternal(0);
+     }
+@@ -542,7 +599,11 @@ void __cdecl  SV_ServerThread(unsigned int threadContext)
+         if (!CL_DemoPlaying())
+         {
+             PROF_SCOPED("G_RunFrame");
++            SV_CoopGuestFrame(); // COOP: guest waits for / applies the host's replay stream
++            SV_CoopThinkTestClients(); // COOP: main server-thread frame path
++            SV_CoopAnimatePlayers(); // COOP: third-person body animation (both machines)
+             G_RunFrame(SV_FRAME_DO_ALL, 0);
++            SV_CoopHostFrame(); // COOP: host streams this frame's replay bytes
+         }
+         Scr_ProfileUpdate();
+         Scr_ProfileBuiltinUpdate();
+diff --git a/src/server/sv_snapshot.cpp b/src/server/sv_snapshot.cpp
+index 3698871..fd50ab5 100644
+--- a/src/server/sv_snapshot.cpp
++++ b/src/server/sv_snapshot.cpp
+@@ -119,6 +119,8 @@ void __cdecl SV_AddEntitiesVisibleFromPoint(int clientNum)
+     }
+ }
+ 
++int SV_CoopViewClient(); // COOP (sv_coop.cpp)
++
+ void __cdecl SV_BuildClientSnapshot(client_t *client)
+ {
+     playerState_s *frames; // r31
+@@ -129,7 +131,7 @@ void __cdecl SV_BuildClientSnapshot(client_t *client)
+     {
+         frames = client->frames;
+         sv.entityNumbers.numSnapshotEntities = 0;
+-        v2 = SV_GameClientNum(client - svs.clients);
++        v2 = SV_GameClientNum(SV_CoopViewClient()); // COOP: guest views player 1
+         memcpy(frames, v2, sizeof(playerState_s));
+         clientNum = frames->clientNum;
+         if (clientNum >= 0x880)
+diff --git a/src/universal/com_files.cpp b/src/universal/com_files.cpp
+index 7e7ea0b..767b38c 100644
+--- a/src/universal/com_files.cpp
++++ b/src/universal/com_files.cpp
+@@ -1268,7 +1268,7 @@ void FS_RegisterDvars()
+     fs_copyfiles = Dvar_RegisterBool("fs_copyfiles", 0, DVAR_INIT, "Copy all used files to another location");
+     v1 = (char *)Sys_DefaultCDPath();
+     fs_cdpath = Dvar_RegisterString("fs_cdpath", v1, DVAR_INIT, "CD path");
+-    v2 = Sys_Cwd();
++    v2 = Sys_DefaultInstallPath(); // COOP: the exe folder (or the game folder one level up), not wherever the shell happens to be
+ #ifdef KISAK_RADIANT
+     // The shipping editor lives in <install>\bin\ (the dev build in <install>\bin\Debug\),
+     // with the game data (raw\, main\, ...) at <install>\.  Derive fs_basepath from the EXE
+diff --git a/src/universal/q_shared.h b/src/universal/q_shared.h
+index 40b7443..4271d7e 100644
+--- a/src/universal/q_shared.h
++++ b/src/universal/q_shared.h
+@@ -1,5 +1,9 @@
+ #pragma once
+ 
++// COOP: player slots in SP (entities 0..COOP_MAX_CLIENTS-1 are players)
++#define COOP_MAX_CLIENTS 4
++
++
+ // q_shared.h -- included first by ALL program modules.
+ // A user mod should never modify this file
+ 
+diff --git a/src/universal/win_common.cpp b/src/universal/win_common.cpp
+index 05cb8f2..12ac888 100644
+--- a/src/universal/win_common.cpp
++++ b/src/universal/win_common.cpp
+@@ -412,6 +412,25 @@ char *__cdecl Sys_DefaultInstallPath()
+                 --len;
+             exePath[len] = 0;
+         }
++        // COOP: the game may be installed one folder up from the exe (a "coop" folder inside the game folder)
++        {
++            char probe[300];
++            _snprintf(probe, sizeof(probe), "%s\\zone", exePath);
++            if (GetFileAttributesA(probe) == INVALID_FILE_ATTRIBUTES)
++            {
++                _snprintf(probe, sizeof(probe), "%s\\..\\zone", exePath);
++                if (GetFileAttributesA(probe) != INVALID_FILE_ATTRIBUTES)
++                {
++                    int n = (int)strlen(exePath);
++                    while (n && exePath[n] != 92 && exePath[n] != 47)
++                        --n;
++                    if (n > 2)
++                        exePath[n] = 0;
++                }
++            }
++        }
++        if (exePath[0] && !IsDebuggerPresent())
++            SetCurrentDirectoryA(exePath); // COOP: files opened by relative name (localization.txt, ...) are found too
+     }
+     return exePath;
+ }
+\ No newline at end of file
+diff --git a/src/win32/win_coop_gamepad.cpp b/src/win32/win_coop_gamepad.cpp
+new file mode 100644
+index 0000000..0db1b32
+--- /dev/null
++++ b/src/win32/win_coop_gamepad.cpp
+@@ -0,0 +1,75 @@
++// COOP: native gamepad (XInput) reader. The game itself has no controller support on PC; cl_input.cpp
++// (CL_CoopGamepadMove) turns this state into movement, aiming and key commands.
++// XInput is loaded at run time (xinput1_4 / 1_3 / 9_1_0 - Wine provides these too), so nothing is linked
++// and the game starts exactly as before when no controller is plugged in.
++#include <windows.h>
++
++struct CoopPadState
++{
++    float lx, ly, rx, ry;      // sticks, -1..1 (up/right positive)
++    float lt, rt;              // triggers, 0..1
++    unsigned short buttons;    // XInput button bits
++};
++
++namespace
++{
++struct XPad { unsigned short buttons; unsigned char lt, rt; short lx, ly, rx, ry; };
++struct XState { DWORD packet; XPad pad; };
++typedef DWORD(WINAPI *XInputGetStateFn)(DWORD, XState *);
++
++XInputGetStateFn s_get;
++bool s_loaded;
++int s_user = -1;          // controller index in use, -1 = none found
++DWORD s_nextScan;
++
++float Norm(short v)
++{
++    float f = v / 32767.0f;
++    return f < -1.0f ? -1.0f : f;
++}
++} // namespace
++
++bool Coop_PadRead(CoopPadState *out)
++{
++    if (!s_loaded)
++    {
++        s_loaded = true;
++        static const char *dlls[] = { "xinput1_4.dll", "xinput1_3.dll", "xinput9_1_0.dll" };
++        for (const char *d : dlls)
++        {
++            HMODULE m = LoadLibraryA(d);
++            if (m && (s_get = (XInputGetStateFn)GetProcAddress(m, "XInputGetState")))
++                break;
++        }
++    }
++    if (!s_get)
++        return false;
++
++    XState st;
++    if (s_user >= 0 && s_get(s_user, &st) != ERROR_SUCCESS)
++        s_user = -1; // unplugged
++    if (s_user < 0)
++    {
++        // looking for a pad is slow when none is connected: only every 2 seconds
++        DWORD now = GetTickCount();
++        if ((int)(now - s_nextScan) < 0)
++            return false;
++        s_nextScan = now + 2000;
++        for (int i = 0; i < 4; i++)
++            if (s_get(i, &st) == ERROR_SUCCESS)
++            {
++                s_user = i;
++                break;
++            }
++        if (s_user < 0)
++            return false;
++    }
++    out->lx = Norm(st.pad.lx);
++    out->ly = Norm(st.pad.ly);
++    out->rx = Norm(st.pad.rx);
++    out->ry = Norm(st.pad.ry);
++    out->lt = st.pad.lt / 255.0f;
++    out->rt = st.pad.rt / 255.0f;
++    out->buttons = st.pad.buttons;
++    return true;
++}
+diff --git a/src/win32/win_coop_launcher.cpp b/src/win32/win_coop_launcher.cpp
+new file mode 100644
+index 0000000..51ebf95
+--- /dev/null
++++ b/src/win32/win_coop_launcher.cpp
+@@ -0,0 +1,352 @@
++// COOP: pre-game launcher window. Shown by WinMain when the game is started without any command line
++// (so a Steam shortcut / double click gets a menu, while scripts that pass options skip it).
++// Plain Win32 controls only: works under Wine/gamescope and needs no resources or extra files.
++// Choices are remembered in coop_launcher.ini next to the exe.
++#include <windows.h>
++#include <stdio.h>
++#include <string.h>
++#include "../server/coop_names.h"
++
++namespace
++{
++// debug overlays the game shows by default (FPS, GLOW stats, build version, replay time); a saved profile can turn
++// them on, so the launcher switches them off explicitly
++#define kQuiet " +set cg_drawFPS Off +set com_statmon 0 +set cg_drawVersion 0 +set replay_time 0 +set replay_autosave 0"
++
++// Campaign order. A null map is an act heading (not selectable). Titles from the retail game;
++// the internal map name is shown too, so a wrong title can never pick the wrong mission.
++struct Mission { const char *map; const char *title; };
++const Mission kMissions[] = {
++    { 0, "-- PROLOGUE --" },
++    { "killhouse", "F.N.G." },
++    { 0, "-- ACT I --" },
++    { "cargoship", "Crew Expendable" },
++    { "coup", "The Coup" },
++    { "blackout", "Blackout" },
++    { "armada", "Charlie Don't Surf" },
++    { "bog_a", "The Bog" },
++    { "hunted", "Hunted" },
++    { 0, "-- ACT II --" },
++    { "ac130", "Death From Above" },
++    { "bog_b", "War Pig" },
++    { "airlift", "Shock and Awe" },
++    { "aftermath", "Aftermath" },
++    { "village_assault", "Safehouse" },
++    { "scoutsniper", "All Ghillied Up" },
++    { "sniperescape", "One Shot, One Kill" },
++    { 0, "-- ACT III --" },
++    { "village_defend", "Heat" },
++    { "ambush", "The Sins of the Father" },
++    { "icbm", "Ultimatum" },
++    { "launchfacility_a", "All In" },
++    { "launchfacility_b", "No Fighting in the War Room" },
++    { "jeepride", "Game Over" },
++    { 0, "-- BONUS --" },
++    { "airplane", "Mile High Club" },
++};
++const int kMissionCount = sizeof(kMissions) / sizeof(kMissions[0]);
++
++enum { ID_SINGLE = 101, ID_HOST, ID_JOIN, ID_HOSTONLINE, ID_JOINONLINE,   // the five modes (radio group)
++       ID_MAP, ID_ADDR, ID_RELAY, ID_PASS, ID_PLAYERS, ID_NAME, ID_DIFF, ID_ENEMIES, ID_WAVES, ID_START, ID_QUIT };
++const int kH = 710, kTop = 40, kShift = 48; // window height; title line; the two extra radio buttons push everything down
++
++struct State
++{
++    bool done, start;
++    HWND single, host, join, hostOnline, joinOnline, map, addr, addrLabel, relayBox, pass, mapLabel, note, win, players, nameBox, diffBox, enemiesBox, wavesBox;
++    HWND lower[20];   // controls under the mission list (they move up when the list is hidden)
++    int lowerY[20], lowerGroup[20], lowerCount; // group 1 = host-only rows (hidden for guests), 2 = below them (move up)
++    char cmd[512];
++};
++State g;
++
++void IniPath(char *out, int n)
++{
++    GetModuleFileNameA(NULL, out, n);
++    char *slash = strrchr(out, '\\');
++    if (slash)
++        *(slash + 1) = 0;
++    strncat(out, "coop_launcher.ini", n - strlen(out) - 1);
++}
++
++bool Checked(HWND h) { return SendMessageA(h, BM_GETCHECK, 0, 0) == BST_CHECKED; }
++
++void UpdateEnabled()
++{
++    bool single = Checked(g.single), host = Checked(g.host), join = Checked(g.join);
++    bool hostOnline = Checked(g.hostOnline), joinOnline = Checked(g.joinOnline);
++    bool hosting = host || hostOnline;          // picks the mission and the game settings
++    bool online = hostOnline || joinOnline;     // goes through a relay
++    EnableWindow(g.addr, join || joinOnline || hostOnline); // an IP address; the room code to join; or the room name to host
++    SetWindowTextA(g.addrLabel, joinOnline ? "Room code:" : hostOnline ? "Room name:" : "Host address:");
++    EnableWindow(g.relayBox, online);
++    EnableWindow(g.pass, !single);
++    for (int i = 0; i < g.lowerCount; i++)
++        if (g.lowerGroup[i] == 1) // only a host chooses players / difficulty / enemies
++            ShowWindow(g.lower[i], hosting ? SW_SHOW : SW_HIDE);
++    EnableWindow(g.map, hosting);
++    // only a host picks the mission; a guest joins whatever the host is playing
++    ShowWindow(g.map, hosting ? SW_SHOW : SW_HIDE);
++    ShowWindow(g.mapLabel, hosting ? SW_SHOW : SW_HIDE);
++    ShowWindow(g.note, hosting ? SW_HIDE : SW_SHOW);
++    {
++        // close the gap left by the hidden mission list (150 tall) and, for a guest, the host-only rows
++        int dy = hosting ? 0 : -100;
++        for (int i = 0; i < g.lowerCount; i++)
++        {
++            RECT r;
++            GetWindowRect(g.lower[i], &r);
++            POINT pt = { r.left, r.top };
++            ScreenToClient(g.win, &pt);
++            int extra = (!hosting && g.lowerGroup[i] == 2) ? -90 : 0;
++            SetWindowPos(g.lower[i], NULL, pt.x, g.lowerY[i] + dy + extra, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
++        }
++        RECT wr;
++        GetWindowRect(g.win, &wr);
++        int h = kH + dy + (hosting ? 0 : -90 + 12); // a little room under the buttons
++        if (wr.bottom - wr.top != h)
++            SetWindowPos(g.win, NULL, 0, 0, wr.right - wr.left, h, SWP_NOMOVE | SWP_NOZORDER);
++    }
++    SetWindowTextA(g.note, joinOnline ? "Enter the room name/code the host gave you and the relay address. You will be taken to the host's mission."
++                         : join ? "You will be taken to whatever mission the host is playing, wherever they are in it."
++                                : "Single player opens the normal main menu.");
++}
++
++void Finish()
++{
++    char map[128] = "cargoship", addr[128], relay[128], pass[64], ini[MAX_PATH], players[8];
++    int nameSel = (int)SendMessageA(g.nameBox, CB_GETCURSEL, 0, 0);
++    if (nameSel < 0 || nameSel >= COOP_NAME_COUNT)
++        nameSel = 0;
++    int diffSel = (int)SendMessageA(g.diffBox, CB_GETCURSEL, 0, 0);
++    int wavesSel = (int)SendMessageA(g.wavesBox, CB_GETCURSEL, 0, 0);
++    static const int kWaveCounts[] = { 0, 5, 10, 15, 20 };
++    if (wavesSel < 0 || wavesSel > 4) wavesSel = 0;
++    int enemiesSel = (int)SendMessageA(g.enemiesBox, CB_GETCURSEL, 0, 0);
++    if (diffSel < 0 || diffSel > 3) diffSel = 1;
++    if (enemiesSel < 0 || enemiesSel > 3) enemiesSel = 0;
++    int pl = (int)SendMessageA(g.players, CB_GETCURSEL, 0, 0);
++    _snprintf(players, sizeof(players), "%d", pl >= 0 ? pl + 2 : 4);
++    int sel = (int)SendMessageA(g.map, LB_GETCURSEL, 0, 0);
++    if (sel >= 0 && sel < kMissionCount && kMissions[sel].map)
++        strncpy(map, kMissions[sel].map, sizeof(map) - 1);
++    GetWindowTextA(g.addr, addr, sizeof(addr));
++    GetWindowTextA(g.relayBox, relay, sizeof(relay));
++    GetWindowTextA(g.pass, pass, sizeof(pass));
++    // spaces would split the launch option
++    for (char *c = addr; *c; ++c) if (*c == ' ') memmove(c, c + 1, strlen(c));
++    for (char *c = relay; *c; ++c) if (*c == ' ') memmove(c, c + 1, strlen(c));
++    for (char *c = pass; *c; ++c) if (*c == ' ' || *c == '"') memmove(c, c + 1, strlen(c)), --c;
++    const char *mode = "single";
++    if (Checked(g.host))
++        mode = "host";
++    else if (Checked(g.join))
++        mode = "join";
++    else if (Checked(g.hostOnline))
++        mode = "hostonline";
++    else if (Checked(g.joinOnline))
++        mode = "joinonline";
++    IniPath(ini, sizeof(ini));
++    WritePrivateProfileStringA("launcher", "mode", mode, ini);
++    WritePrivateProfileStringA("launcher", "map", map, ini);
++    WritePrivateProfileStringA("launcher", "address", addr, ini);
++    WritePrivateProfileStringA("launcher", "relay", relay, ini);
++    WritePrivateProfileStringA("launcher", "password", pass, ini);
++    WritePrivateProfileStringA("launcher", "players", players, ini);
++    char tmp[8];
++    _snprintf(tmp, sizeof(tmp), "%d", diffSel);
++    WritePrivateProfileStringA("launcher", "difficulty", tmp, ini);
++    _snprintf(tmp, sizeof(tmp), "%d", enemiesSel);
++    WritePrivateProfileStringA("launcher", "enemies", tmp, ini);
++    _snprintf(tmp, sizeof(tmp), "%d", wavesSel);
++    WritePrivateProfileStringA("launcher", "waves", tmp, ini);
++    char nameStr[8];
++    _snprintf(nameStr, sizeof(nameStr), "%d", nameSel);
++    WritePrivateProfileStringA("launcher", "name", nameStr, ini);
++
++    char pw[96] = "";
++    if (pass[0])
++        _snprintf(pw, sizeof(pw), " +set coop_password %s", pass);
++    pw[sizeof(pw) - 1] = 0;
++    if (!strcmp(mode, "host"))
++        _snprintf(g.cmd, sizeof(g.cmd), " +set coop_host 1%s +set coop_name %d +set coop_maxplayers %s +set coop_difficulty %d +set coop_enemies %d +set coop_horde %d +set coop_autostart 1 +set com_introPlayed 1 " kQuiet " +map %s", pw, nameSel, players, diffSel, enemiesSel + 1, kWaveCounts[wavesSel], map);
++    else if (!strcmp(mode, "join") && addr[0])
++        // the guest's own map is only a starting point: the host tells it which map to load
++        _snprintf(g.cmd, sizeof(g.cmd), " +set coop_connect %s%s +set coop_name %d +set coop_autostart 1 +set com_introPlayed 1 " kQuiet " +map cargoship", addr, pw, nameSel);
++    else if (!strcmp(mode, "hostonline") && relay[0])
++        // through the relay: nothing listens on this machine; the game prints the room code to give your friends
++        _snprintf(g.cmd, sizeof(g.cmd), " +set coop_host 1 +set coop_relay %s%s%s%s +set coop_name %d +set coop_maxplayers %s +set coop_difficulty %d +set coop_enemies %d +set coop_horde %d +set coop_autostart 1 +set com_introPlayed 1 " kQuiet " +map %s", relay, addr[0] ? " +set coop_roomname " : "", addr, pw, nameSel, players, diffSel, enemiesSel + 1, kWaveCounts[wavesSel], map);
++    else if (!strcmp(mode, "joinonline") && relay[0] && addr[0])
++        _snprintf(g.cmd, sizeof(g.cmd), " +set coop_connect %s@%s%s +set coop_name %d +set coop_autostart 1 +set com_introPlayed 1 " kQuiet " +map cargoship", addr, relay, pw, nameSel);
++    else
++        g.cmd[0] = 0; // single player: the normal main menu
++    g.cmd[sizeof(g.cmd) - 1] = 0;
++    g.start = true;
++    g.done = true;
++}
++
++LRESULT CALLBACK LauncherProc(HWND h, UINT m, WPARAM w, LPARAM l)
++{
++    switch (m)
++    {
++    case WM_COMMAND:
++        switch (LOWORD(w))
++        {
++        case ID_SINGLE: case ID_HOST: case ID_JOIN: case ID_HOSTONLINE: case ID_JOINONLINE: UpdateEnabled(); return 0;
++        case ID_MAP:
++            if (HIWORD(w) == LBN_SELCHANGE)
++            {
++                int sel = (int)SendMessageA(g.map, LB_GETCURSEL, 0, 0);
++                if (sel >= 0 && sel < kMissionCount && !kMissions[sel].map && sel + 1 < kMissionCount)
++                    SendMessageA(g.map, LB_SETCURSEL, sel + 1, 0); // an act heading: take the first mission under it
++            }
++            return 0;
++        case ID_START: Finish(); return 0;
++        case ID_QUIT: g.done = true; return 0;
++        }
++        break;
++    case WM_CLOSE: g.done = true; return 0;
++    }
++    return DefWindowProcA(h, m, w, l);
++}
++
++HWND Add(HWND parent, const char *cls, const char *text, DWORD style, int x, int y, int w, int h, int id, HFONT font)
++{
++    HWND c = CreateWindowExA(0, cls, text, WS_CHILD | WS_VISIBLE | style, x, y + kTop + (y >= 130 && (id == 0 || id >= ID_MAP) ? kShift : 0), w, h, parent, (HMENU)(INT_PTR)id, GetModuleHandleA(NULL), NULL);
++    SendMessageA(c, WM_SETFONT, (WPARAM)font, TRUE);
++    return c;
++}
++} // namespace
++
++// Returns false if the user chose Quit. Appends the chosen launch options to cmdline.
++bool Coop_ShowLauncher(char *cmdline, int cmdlineSize)
++{
++    WNDCLASSA wc = {};
++    wc.lpfnWndProc = LauncherProc;
++    wc.hInstance = GetModuleHandleA(NULL);
++    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
++    wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
++    wc.lpszClassName = "KisakCoopLauncher";
++    RegisterClassA(&wc);
++
++    int W = 420, H = kH;
++    int sx = (GetSystemMetrics(SM_CXSCREEN) - W) / 2, sy = (GetSystemMetrics(SM_CYSCREEN) - H) / 2;
++    // borderless window (no title bar): the title line below stands in for it
++    HWND win = CreateWindowExA(WS_EX_TOPMOST, wc.lpszClassName, "CudCampaign",
++        WS_POPUP | WS_DLGFRAME | WS_VISIBLE, sx, sy, W, H, NULL, NULL, wc.hInstance, NULL);
++    g.win = win;
++    HFONT titleFont = CreateFontA(24, 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0, 0, 0, "Arial");
++    HFONT font = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
++
++    char ini[MAX_PATH], mode[16], map[128], addr[128], relay[128], pass[64];
++    int savedPlayers;
++    IniPath(ini, sizeof(ini));
++    GetPrivateProfileStringA("launcher", "mode", "single", mode, sizeof(mode), ini);
++    GetPrivateProfileStringA("launcher", "map", "cargoship", map, sizeof(map), ini);
++    GetPrivateProfileStringA("launcher", "address", "", addr, sizeof(addr), ini);
++    GetPrivateProfileStringA("launcher", "relay", "", relay, sizeof(relay), ini);
++    GetPrivateProfileStringA("launcher", "password", "", pass, sizeof(pass), ini);
++    savedPlayers = GetPrivateProfileIntA("launcher", "players", 4, ini);
++
++    {
++        HWND t = CreateWindowExA(0, "STATIC", "CUDCAMPAIGN", WS_CHILD | WS_VISIBLE | SS_CENTER, 0, 8, W - 6, 28, win, NULL, wc.hInstance, NULL);
++        SendMessageA(t, WM_SETFONT, (WPARAM)titleFont, TRUE);
++    }
++    Add(win, "STATIC", "Start the host first; guests join whatever the host is playing.", 0, 16, 4, 380, 20, 0, font);
++    g.single = Add(win, "BUTTON", "Single player (main menu)", BS_AUTORADIOBUTTON | WS_GROUP, 16, 50, 380, 20, ID_SINGLE, font);
++    g.host = Add(win, "BUTTON", "Host a co-op game (LAN / direct IP)", BS_AUTORADIOBUTTON, 16, 74, 380, 20, ID_HOST, font);
++    g.join = Add(win, "BUTTON", "Join a co-op game (IP address)", BS_AUTORADIOBUTTON, 16, 98, 380, 20, ID_JOIN, font);
++    g.hostOnline = Add(win, "BUTTON", "Host online (through a relay, room code)", BS_AUTORADIOBUTTON, 16, 122, 380, 20, ID_HOSTONLINE, font);
++    g.joinOnline = Add(win, "BUTTON", "Join online (room code)", BS_AUTORADIOBUTTON, 16, 146, 380, 20, ID_JOINONLINE, font);
++    g.mapLabel = Add(win, "STATIC", "Mission:", 0, 16, 130, 200, 18, 0, font);
++    g.note = Add(win, "STATIC", "", 0, 16, 150, 384, 60, 0, font);
++    g.map = Add(win, "LISTBOX", "", WS_BORDER | WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT, 16, 150, 384, 150, ID_MAP, font);
++    int selIdx = -1;
++    for (int i = 0; i < kMissionCount; i++)
++    {
++        char line[160];
++        if (kMissions[i].map)
++            _snprintf(line, sizeof(line), "   %s   (%s)", kMissions[i].title, kMissions[i].map);
++        else
++            _snprintf(line, sizeof(line), "%s", kMissions[i].title);
++        line[sizeof(line) - 1] = 0;
++        SendMessageA(g.map, LB_ADDSTRING, 0, (LPARAM)line);
++        if (kMissions[i].map && !strcmp(kMissions[i].map, map))
++            selIdx = i;
++    }
++    SendMessageA(g.map, LB_SETCURSEL, selIdx >= 0 ? selIdx : 3, 0);
++    struct { const char *cls, *text; DWORD style; int x, y, w, h, id; HWND *out; int group; } lowerDefs[] = {
++        { "STATIC", "Host address:", 0, 16, 318, 90, 18, 0, &g.addrLabel, 0 },
++        { "EDIT", addr, WS_BORDER | ES_AUTOHSCROLL, 110, 314, 200, 22, ID_ADDR, &g.addr, 0 },
++        { "STATIC", "Relay:", 0, 16, 348, 90, 18, 0, 0, 0 },
++        { "EDIT", relay, WS_BORDER | ES_AUTOHSCROLL, 110, 344, 200, 22, ID_RELAY, &g.relayBox, 0 },
++        { "STATIC", "Password:", 0, 16, 378, 90, 18, 0, 0, 0 },
++        { "EDIT", pass, WS_BORDER | ES_AUTOHSCROLL, 110, 374, 200, 22, ID_PASS, &g.pass, 0 },
++        { "STATIC", "Your name:", 0, 16, 408, 90, 18, 0, 0, 0 },
++        { "COMBOBOX", "", CBS_DROPDOWNLIST | WS_VSCROLL, 110, 404, 130, 160, ID_NAME, &g.nameBox, 0 },
++        { "STATIC", "Players:", 0, 16, 438, 90, 18, 0, 0, 1 },
++        { "COMBOBOX", "", CBS_DROPDOWNLIST | WS_VSCROLL, 110, 434, 70, 120, ID_PLAYERS, &g.players, 1 },
++        { "STATIC", "Difficulty:", 0, 16, 468, 90, 18, 0, 0, 1 },
++        { "COMBOBOX", "", CBS_DROPDOWNLIST | WS_VSCROLL, 110, 464, 130, 120, ID_DIFF, &g.diffBox, 1 },
++        { "STATIC", "Enemies:", 0, 16, 498, 90, 18, 0, 0, 1 },
++        { "COMBOBOX", "", CBS_DROPDOWNLIST | WS_VSCROLL, 110, 494, 130, 120, ID_ENEMIES, &g.enemiesBox, 1 },
++        { "STATIC", "Horde waves:", 0, 16, 528, 90, 18, 0, 0, 1 },
++        { "COMBOBOX", "", CBS_DROPDOWNLIST | WS_VSCROLL, 110, 524, 130, 120, ID_WAVES, &g.wavesBox, 1 },
++        { "STATIC", "Leave the password empty for an open game.", 0, 16, 558, 384, 18, 0, 0, 2 },
++        { "BUTTON", "Start", BS_DEFPUSHBUTTON, 110, 582, 90, 28, ID_START, 0, 2 },
++        { "BUTTON", "Quit", 0, 220, 582, 90, 28, ID_QUIT, 0, 2 },
++    };
++    g.lowerCount = 0;
++    for (auto &d : lowerDefs)
++    {
++        HWND c = Add(win, d.cls, d.text, d.style, d.x, d.y, d.w, d.h, d.id, font);
++        if (d.out)
++            *d.out = c;
++        g.lower[g.lowerCount] = c;
++        g.lowerGroup[g.lowerCount] = d.group;
++        g.lowerY[g.lowerCount++] = d.y + kTop + kShift;
++    }
++
++    for (int i = 0; i < COOP_NAME_COUNT; i++)
++        SendMessageA(g.nameBox, CB_ADDSTRING, 0, (LPARAM)kCoopNames[i]);
++    {
++        int saved = GetPrivateProfileIntA("launcher", "name", 0, ini);
++        SendMessageA(g.nameBox, CB_SETCURSEL, saved >= 0 && saved < COOP_NAME_COUNT ? saved : 0, 0);
++    }
++    static const char *kCounts[] = { "2", "3", "4" };
++    for (const char *n : kCounts)
++        SendMessageA(g.players, CB_ADDSTRING, 0, (LPARAM)n);
++    SendMessageA(g.players, CB_SETCURSEL, savedPlayers >= 2 && savedPlayers <= 4 ? savedPlayers - 2 : 2, 0);
++    static const char *kDiffs[] = { "Recruit", "Regular", "Hardened", "Veteran" };
++    for (const char *d : kDiffs)
++        SendMessageA(g.diffBox, CB_ADDSTRING, 0, (LPARAM)d);
++    SendMessageA(g.diffBox, CB_SETCURSEL, GetPrivateProfileIntA("launcher", "difficulty", 1, ini) & 3, 0);
++    static const char *kEnemies[] = { "Normal", "Double", "Triple", "Quadruple" };
++    for (const char *e : kEnemies)
++        SendMessageA(g.enemiesBox, CB_ADDSTRING, 0, (LPARAM)e);
++    SendMessageA(g.enemiesBox, CB_SETCURSEL, GetPrivateProfileIntA("launcher", "enemies", 0, ini) & 3, 0);
++    static const char *kWaves[] = { "Off (campaign)", "5 waves", "10 waves", "15 waves", "20 waves" };
++    for (const char *w : kWaves)
++        SendMessageA(g.wavesBox, CB_ADDSTRING, 0, (LPARAM)w);
++    SendMessageA(g.wavesBox, CB_SETCURSEL, GetPrivateProfileIntA("launcher", "waves", 0, ini) % 5, 0);
++    int sel = !strcmp(mode, "host") ? ID_HOST : !strcmp(mode, "join") ? ID_JOIN : !strcmp(mode, "hostonline") ? ID_HOSTONLINE : !strcmp(mode, "joinonline") ? ID_JOINONLINE : ID_SINGLE;
++    CheckRadioButton(win, ID_SINGLE, ID_JOINONLINE, sel);
++    g.done = g.start = false;
++    UpdateEnabled();
++    SetForegroundWindow(win);
++
++    MSG msg;
++    while (!g.done && GetMessageA(&msg, NULL, 0, 0) > 0)
++    {
++        if (!IsDialogMessageA(win, &msg))
++        {
++            TranslateMessage(&msg);
++            DispatchMessageA(&msg);
++        }
++    }
++    DestroyWindow(win);
++    if (!g.start)
++        return false;
++    strncat(cmdline, g.cmd, cmdlineSize - strlen(cmdline) - 1);
++    return true;
++}
+diff --git a/src/win32/win_main.cpp b/src/win32/win_main.cpp
+index 471b763..81eac27 100644
+--- a/src/win32/win_main.cpp
++++ b/src/win32/win_main.cpp
+@@ -756,8 +756,14 @@ WinMain
+ # BURN, BABY, BURN -- MASTER IGNITION ROUTINE
+ ==================
+ */
++#ifdef KISAK_SP
++bool Coop_ShowLauncher(char *cmdline, int cmdlineSize); // win_coop_launcher.cpp
++#endif
++
+ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
+ 
++	Sys_DefaultInstallPath(); // COOP: find the game folder (here or one up) and work from it before anything opens a file
++
+ 	// KISAK: make a pretty console in debug mode, redirect in/out/err stream
+ #if 1 || defined(KISAK_DEBUG)
+ 	AllocConsole();
+@@ -798,6 +804,16 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
+ 			Sys_FindInfo();
+ 			g_wv.hInstance = hInstance;
+ 			I_strncpyz(sys_cmdline, lpCmdLine, 1024);
++#ifdef KISAK_SP
++			// COOP: started with no options (double click / Steam shortcut): show the co-op launcher
++			{
++				const char *c = lpCmdLine;
++				while (*c == ' ' || *c == '\t')
++					++c;
++				if (!*c && !Coop_ShowLauncher(sys_cmdline, 1024))
++					return 0; // user chose Quit
++			}
++#endif
+ 			Sys_CreateSplashWindow();
+ 			Sys_ShowSplashWindow();
+ 			Win_RegisterClass();

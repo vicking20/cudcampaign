@@ -1,0 +1,15 @@
+# sha256  destination (inside coop/)  source path in upstream KisakCOD
+# The installer downloads BASE/<source path>. BASE can be changed (or the whole file edited) to use another mirror/build.
+BASE=https://raw.githubusercontent.com/SwagSoftware/KisakCOD/8aadf94cc82795d6829ca06052996a5ec79001c3/deps
+d88739e35a08210a016d9ff290fe56c54bce1723d9f9ba07e5215b0046c695f7  binkw32.dll  binklib/binkw32.dll
+54bdd8e2e633e1c751e2d88afb2810bbaf60c85e385f4b1efc00dc08f7f80486  mss32.dll  msslib/dlls/mss32.dll
+970abcf7343219511de595b84af3215a0254c42c2881cb29b136c61564509b4f  steam_api.dll  steamsdk/steam_api.dll
+3e8cf308cc9f74e644701681ace375f26707db9622d9ebe6f63d0dd34e993199  miles/milesEq.flt  msslib/dlls/miles/milesEq.flt
+e932f13a2407b71fe3b4329c740acc0781b2f2b502e41fd9074a9c82caa7ed8d  miles/milesEq.flt.orig  msslib/dlls/miles/milesEq.flt.orig
+2629b5a107fa04a72ebe236ae7a266af5df807294fcc1039577bd02053a76633  miles/mssdolby.flt  msslib/dlls/miles/mssdolby.flt
+34fd4fc287aba7e7662515d10c74c1cc642d06e2d781464cc110f39959188733  miles/mssds3d.flt  msslib/dlls/miles/mssds3d.flt
+62ca6c1b32fd010667ec3576e690c207f7345fbc601d5f1181c0a772dec1994c  miles/mssdsp.flt  msslib/dlls/miles/mssdsp.flt
+102a32b535f6b506c49a4da4b1dafbfbb0afae05c320a3423dc763df7f5216f1  miles/msseax.flt  msslib/dlls/miles/msseax.flt
+bcbf4a4b285458ae93843c604ae62d05ecf5e851187574958e64e14931f6a347  miles/mssmp3.asi  msslib/dlls/miles/mssmp3.asi
+a3ca971c8f28e189b8b62d20fc29407d0fc4155dafa4b8ea2f5947a05268f9e3  miles/msssrs.flt  msslib/dlls/miles/msssrs.flt
+b2e0400689199b0e41008df6756910847fca844264788fec85434bdef5d429a5  miles/mssvoice.asi  msslib/dlls/miles/mssvoice.asi
